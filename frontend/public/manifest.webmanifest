@@ -1,0 +1,13 @@
+{
+  "name": "Lingora — Interaktiv o'qish platformasi",
+  "short_name": "Lingora",
+  "description": "Ingliz tili kitoblarini interaktiv o'quv muhitiga aylantiring.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "lang": "uz",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

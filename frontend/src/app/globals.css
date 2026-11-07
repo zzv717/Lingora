@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* blank inputs drawn over the PDF page */
+.blank-input {
+  @apply absolute border-b-2 border-brand-500 bg-brand-50/90 text-center text-sm text-slate-900 shadow-sm outline-none transition focus:bg-brand-100 focus:ring-2 focus:ring-brand-400 dark:bg-brand-900/70 dark:text-white;
+}
+
+/* nice scrollbars in panels */
+.thin-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.thin-scroll::-webkit-scrollbar-thumb { @apply rounded-full bg-slate-300 dark:bg-slate-700; }

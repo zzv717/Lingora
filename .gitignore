@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Lingora data
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Env & secrets
+.env
+*.env.local
+
+# OS
+.DS_Store

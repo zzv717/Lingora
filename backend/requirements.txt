@@ -1,0 +1,20 @@
+# Lingora backend dependencies (Python 3.11+)
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+SQLAlchemy==2.0.*
+alembic==1.14.*
+pydantic==2.10.*
+pydantic-settings==2.6.*
+email-validator==2.2.*
+PyJWT==2.10.*
+httpx==0.28.*
+python-multipart==0.0.17
+PyMuPDF==1.25.*
+
+# --- Testing ---
+pytest==8.3.*
+
+# --- Optional (production / enhanced features). Install separately: ---
+# pytesseract==0.3.13        # OCR for scanned PDFs (requires tesseract binary, languages: eng+uzb)
+# celery==5.4.*              # distributed task queue (requires redis)
+# redis==5.*                 # redis client for celery + distributed rate limiting
