@@ -1,9 +1,11 @@
 """Progress dashboard, heartbeats, smart revision sessions."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_profile, get_current_user
+from app.core.errors import ApiError
+from app.core.rate_limit import limit
 from app.db.session import get_db
 from app.models import Profile, RevisionSession, User
 from app.schemas import DashboardOut
@@ -26,8 +28,9 @@ class HeartbeatIn(BaseModel):
 
 
 @router.post("/progress/heartbeat")
-def heartbeat_endpoint(data: HeartbeatIn, db: Session = Depends(get_db),
+def heartbeat_endpoint(data: HeartbeatIn, request: Request, db: Session = Depends(get_db),
                        user: User = Depends(get_current_user)):
+    limit(request, "heartbeat", 120, 60, user.id)
     heartbeat(db, user.id, data.seconds, data.lesson_id, data.page)
     return {"ok": True}
 
@@ -39,7 +42,8 @@ def progress_topics(db: Session = Depends(get_db), user: User = Depends(get_curr
 
 
 @router.post("/revision/sessions", status_code=201)
-def create_revision(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_revision(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    limit(request, "revision_create", 30, 3600, user.id)
     session = revision_service.build_revision(db, user.id)
     if not session:
         return {"created": False,
@@ -53,15 +57,48 @@ def create_revision(db: Session = Depends(get_db), user: User = Depends(get_curr
                       for i, it in enumerate(session.items)]}
 
 
-class RevisionResultIn(BaseModel):
-    results: list[dict]
+@router.get("/revision/sessions/{session_id}")
+def get_revision_session(session_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    session = db.get(RevisionSession, session_id)
+    if not session or session.user_id != user.id:
+        raise ApiError("SESSION_NOT_FOUND", "Takrorlash seansi topilmadi.", 404)
+    return {
+        "session_id": session.id,
+        "focus": session.focus,
+        "reason": session.reason,
+        "status": session.status,
+        "score": session.score,
+        "items": [
+            {
+                "item_id": str(i),
+                "item_type": it["item_type"],
+                "payload": it["payload"],
+                "word_id": it.get("word_id"),
+                "question_id": it.get("question_id"),
+                "result": it.get("result"),
+            }
+            for i, it in enumerate(session.items)
+        ],
+    }
+
+
+class RevisionSubmissionItem(BaseModel):
+    item_id: str
+    answer: str
+
+
+class RevisionSubmitIn(BaseModel):
+    answers: list[RevisionSubmissionItem]
 
 
 @router.post("/revision/sessions/{session_id}/complete")
-def complete_revision(session_id: str, data: RevisionResultIn, db: Session = Depends(get_db),
-                      user: User = Depends(get_current_user)):
+def complete_revision(session_id: str, data: RevisionSubmitIn, request: Request,
+                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    limit(request, "revision_complete", 60, 3600, user.id)
     session = db.get(RevisionSession, session_id)
     if not session or session.user_id != user.id:
-        return {"ok": False, "message_uz": "Seans topilmadi."}
-    session = revision_service.complete_revision(db, session, data.results)
-    return {"ok": True, "score": session.score, "status": session.status}
+        raise ApiError("SESSION_NOT_FOUND", "Seans topilmadi.", 404)
+
+    answers_dict = {a.item_id: a.answer for a in data.answers}
+    session = revision_service.grade_and_complete_revision(db, session, answers_dict)
+    return {"ok": True, "score": session.score, "status": session.status, "focus": session.focus}

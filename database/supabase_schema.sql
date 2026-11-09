@@ -11,7 +11,27 @@
 -- so even direct client access can never read another user's data.
 -- ============================================================
 
-CREATE TABLE users (
+-- Helper function: extracts user id from Supabase auth.uid() OR custom JWT app.current_user_id claim
+CREATE OR REPLACE FUNCTION lingora_current_user_id() RETURNS TEXT AS $$
+BEGIN
+  -- 1) Supabase native auth.uid()
+  IF NULLIF(current_setting('request.jwt.claim.sub', true), '') IS NOT NULL THEN
+    RETURN current_setting('request.jwt.claim.sub', true);
+  END IF;
+  -- 2) Custom JWT or session variable
+  IF NULLIF(current_setting('app.current_user_id', true), '') IS NOT NULL THEN
+    RETURN current_setting('app.current_user_id', true);
+  END IF;
+  -- 3) Fallback auth.uid() if auth schema exists
+  BEGIN
+    RETURN auth.uid()::text;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+  END;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE TABLE IF NOT EXISTS users (
 	email VARCHAR(255) NOT NULL, 
 	password_hash VARCHAR(255) NOT NULL, 
 	full_name VARCHAR(255) NOT NULL, 
@@ -23,8 +43,9 @@ CREATE TABLE users (
 	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX ix_users_email ON users (email);
-CREATE TABLE profiles (
+CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email);
+
+CREATE TABLE IF NOT EXISTS profiles (
 	user_id VARCHAR(36) NOT NULL, 
 	interface_language VARCHAR(8) NOT NULL, 
 	learning_language VARCHAR(8) NOT NULL, 
@@ -40,8 +61,9 @@ CREATE TABLE profiles (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE UNIQUE INDEX ix_profiles_user_id ON profiles (user_id);
-CREATE TABLE refresh_tokens (
+CREATE UNIQUE INDEX IF NOT EXISTS ix_profiles_user_id ON profiles (user_id);
+
+CREATE TABLE IF NOT EXISTS refresh_tokens (
 	user_id VARCHAR(36) NOT NULL, 
 	token_hash VARCHAR(64) NOT NULL, 
 	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
@@ -51,9 +73,10 @@ CREATE TABLE refresh_tokens (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_refresh_tokens_user_id ON refresh_tokens (user_id);
-CREATE UNIQUE INDEX ix_refresh_tokens_token_hash ON refresh_tokens (token_hash);
-CREATE TABLE password_resets (
+CREATE INDEX IF NOT EXISTS ix_refresh_tokens_user_id ON refresh_tokens (user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_refresh_tokens_token_hash ON refresh_tokens (token_hash);
+
+CREATE TABLE IF NOT EXISTS password_resets (
 	user_id VARCHAR(36) NOT NULL, 
 	token_hash VARCHAR(64) NOT NULL, 
 	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
@@ -62,9 +85,10 @@ CREATE TABLE password_resets (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_password_resets_user_id ON password_resets (user_id);
-CREATE UNIQUE INDEX ix_password_resets_token_hash ON password_resets (token_hash);
-CREATE TABLE subscriptions (
+CREATE INDEX IF NOT EXISTS ix_password_resets_user_id ON password_resets (user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_password_resets_token_hash ON password_resets (token_hash);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
 	user_id VARCHAR(36) NOT NULL, 
 	plan VARCHAR(16) NOT NULL, 
 	status VARCHAR(16) NOT NULL, 
@@ -79,7 +103,8 @@ CREATE TABLE subscriptions (
 	CONSTRAINT uq_subscription_user UNIQUE (user_id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE TABLE books (
+
+CREATE TABLE IF NOT EXISTS books (
 	user_id VARCHAR(36) NOT NULL, 
 	title VARCHAR(512) NOT NULL, 
 	original_filename VARCHAR(512) NOT NULL, 
@@ -96,8 +121,9 @@ CREATE TABLE books (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_books_user_id ON books (user_id);
-CREATE TABLE activity_days (
+CREATE INDEX IF NOT EXISTS ix_books_user_id ON books (user_id);
+
+CREATE TABLE IF NOT EXISTS activity_days (
 	user_id VARCHAR(36) NOT NULL, 
 	day VARCHAR(10) NOT NULL, 
 	seconds INTEGER NOT NULL, 
@@ -109,9 +135,10 @@ CREATE TABLE activity_days (
 	CONSTRAINT uq_activity_day UNIQUE (user_id, day), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_activity_days_day ON activity_days (day);
-CREATE INDEX ix_activity_days_user_id ON activity_days (user_id);
-CREATE TABLE usage_events (
+CREATE INDEX IF NOT EXISTS ix_activity_days_day ON activity_days (day);
+CREATE INDEX IF NOT EXISTS ix_activity_days_user_id ON activity_days (user_id);
+
+CREATE TABLE IF NOT EXISTS usage_events (
 	user_id VARCHAR(36) NOT NULL, 
 	day VARCHAR(10) NOT NULL, 
 	feature VARCHAR(48) NOT NULL, 
@@ -125,10 +152,11 @@ CREATE TABLE usage_events (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_usage_events_user_id ON usage_events (user_id);
-CREATE INDEX ix_usage_user_day ON usage_events (user_id, day);
-CREATE INDEX ix_usage_events_day ON usage_events (day);
-CREATE TABLE processing_jobs (
+CREATE INDEX IF NOT EXISTS ix_usage_events_day ON usage_events (day);
+CREATE INDEX IF NOT EXISTS ix_usage_events_user_id ON usage_events (user_id);
+CREATE INDEX IF NOT EXISTS ix_usage_user_day ON usage_events (user_id, day);
+
+CREATE TABLE IF NOT EXISTS processing_jobs (
 	book_id VARCHAR(36) NOT NULL, 
 	user_id VARCHAR(36) NOT NULL, 
 	job_type VARCHAR(32) NOT NULL, 
@@ -149,10 +177,11 @@ CREATE TABLE processing_jobs (
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_jobs_book_status ON processing_jobs (book_id, status);
-CREATE INDEX ix_processing_jobs_user_id ON processing_jobs (user_id);
-CREATE INDEX ix_processing_jobs_book_id ON processing_jobs (book_id);
-CREATE TABLE book_pages (
+CREATE INDEX IF NOT EXISTS ix_jobs_book_status ON processing_jobs (book_id, status);
+CREATE INDEX IF NOT EXISTS ix_processing_jobs_book_id ON processing_jobs (book_id);
+CREATE INDEX IF NOT EXISTS ix_processing_jobs_user_id ON processing_jobs (user_id);
+
+CREATE TABLE IF NOT EXISTS book_pages (
 	book_id VARCHAR(36) NOT NULL, 
 	page_number INTEGER NOT NULL, 
 	width FLOAT NOT NULL, 
@@ -168,8 +197,9 @@ CREATE TABLE book_pages (
 	CONSTRAINT uq_book_page UNIQUE (book_id, page_number), 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_book_pages_book_id ON book_pages (book_id);
-CREATE TABLE chapters (
+CREATE INDEX IF NOT EXISTS ix_book_pages_book_id ON book_pages (book_id);
+
+CREATE TABLE IF NOT EXISTS chapters (
 	book_id VARCHAR(36) NOT NULL, 
 	title VARCHAR(512) NOT NULL, 
 	kind VARCHAR(24) NOT NULL, 
@@ -181,37 +211,9 @@ CREATE TABLE chapters (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_chapters_book_id ON chapters (book_id);
-CREATE TABLE answer_keys (
-	book_id VARCHAR(36) NOT NULL, 
-	page_number INTEGER NOT NULL, 
-	source VARCHAR(24) NOT NULL, 
-	verified BOOLEAN NOT NULL, 
-	raw_text TEXT NOT NULL, 
-	entries JSON NOT NULL, 
-	id VARCHAR(36) NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
-);
-CREATE INDEX ix_answer_keys_book_id ON answer_keys (book_id);
-CREATE TABLE revision_sessions (
-	user_id VARCHAR(36) NOT NULL, 
-	book_id VARCHAR(36), 
-	status VARCHAR(24) NOT NULL, 
-	focus VARCHAR(255) NOT NULL, 
-	reason TEXT NOT NULL, 
-	score FLOAT NOT NULL, 
-	items JSON NOT NULL, 
-	finished_at TIMESTAMP WITH TIME ZONE, 
-	id VARCHAR(36) NOT NULL, 
-	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
-	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE SET NULL
-);
-CREATE INDEX ix_revision_sessions_user_id ON revision_sessions (user_id);
-CREATE TABLE lessons (
+CREATE INDEX IF NOT EXISTS ix_chapters_book_id ON chapters (book_id);
+
+CREATE TABLE IF NOT EXISTS lessons (
 	book_id VARCHAR(36) NOT NULL, 
 	chapter_id VARCHAR(36), 
 	title VARCHAR(512) NOT NULL, 
@@ -228,9 +230,21 @@ CREATE TABLE lessons (
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
 	FOREIGN KEY(chapter_id) REFERENCES chapters (id) ON DELETE SET NULL
 );
-CREATE INDEX ix_lessons_book_id ON lessons (book_id);
-CREATE INDEX ix_lessons_chapter_id ON lessons (chapter_id);
-CREATE TABLE exercises (
+CREATE INDEX IF NOT EXISTS ix_lessons_book_id ON lessons (book_id);
+CREATE INDEX IF NOT EXISTS ix_lessons_chapter_id ON lessons (chapter_id);
+
+CREATE TABLE IF NOT EXISTS answer_keys (
+	book_id VARCHAR(36) NOT NULL, 
+	page_number INTEGER NOT NULL, 
+	source VARCHAR(24) NOT NULL, 
+	verified BOOLEAN NOT NULL, 
+	id VARCHAR(36) NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_answer_keys_book_id ON answer_keys (book_id);
+
+CREATE TABLE IF NOT EXISTS exercises (
 	book_id VARCHAR(36) NOT NULL, 
 	lesson_id VARCHAR(36), 
 	chapter_id VARCHAR(36), 
@@ -251,12 +265,84 @@ CREATE TABLE exercises (
 	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
-	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL, 
-	FOREIGN KEY(chapter_id) REFERENCES chapters (id) ON DELETE SET NULL
+	FOREIGN KEY(chapter_id) REFERENCES chapters (id) ON DELETE SET NULL, 
+	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL
 );
-CREATE INDEX ix_exercises_lesson_order ON exercises (lesson_id, order_index);
-CREATE INDEX ix_exercises_book_id ON exercises (book_id);
-CREATE TABLE vocabulary_words (
+CREATE INDEX IF NOT EXISTS ix_exercises_book_id ON exercises (book_id);
+CREATE INDEX IF NOT EXISTS ix_exercises_chapter_id ON exercises (chapter_id);
+CREATE INDEX IF NOT EXISTS ix_exercises_lesson_id ON exercises (lesson_id);
+CREATE INDEX IF NOT EXISTS ix_exercises_lesson_order ON exercises (lesson_id, order_index);
+
+CREATE TABLE IF NOT EXISTS exercise_questions (
+	exercise_id VARCHAR(36) NOT NULL, 
+	order_index INTEGER NOT NULL, 
+	number VARCHAR(16) NOT NULL, 
+	prompt TEXT NOT NULL, 
+	passage TEXT NOT NULL, 
+	blanks JSON NOT NULL, 
+	matching_pairs JSON NOT NULL, 
+	correct_answers JSON NOT NULL, 
+	answer_source VARCHAR(16) NOT NULL, 
+	explanation_uz TEXT NOT NULL, 
+	needs_review BOOLEAN NOT NULL, 
+	id VARCHAR(36) NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_exercise_questions_exercise_id ON exercise_questions (exercise_id);
+
+CREATE TABLE IF NOT EXISTS exercise_options (
+	question_id VARCHAR(36) NOT NULL, 
+	letter VARCHAR(4) NOT NULL, 
+	text TEXT NOT NULL, 
+	is_correct BOOLEAN, 
+	id VARCHAR(36) NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(question_id) REFERENCES exercise_questions (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_exercise_options_question_id ON exercise_options (question_id);
+
+CREATE TABLE IF NOT EXISTS student_answers (
+	user_id VARCHAR(36) NOT NULL, 
+	question_id VARCHAR(36) NOT NULL, 
+	content JSON NOT NULL, 
+	is_submitted BOOLEAN NOT NULL, 
+	id VARCHAR(36) NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_student_answer UNIQUE (user_id, question_id), 
+	FOREIGN KEY(question_id) REFERENCES exercise_questions (id) ON DELETE CASCADE, 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_student_answers_question_id ON student_answers (question_id);
+CREATE INDEX IF NOT EXISTS ix_student_answers_user_id ON student_answers (user_id);
+
+CREATE TABLE IF NOT EXISTS exercise_attempts (
+	user_id VARCHAR(36) NOT NULL, 
+	exercise_id VARCHAR(36) NOT NULL, 
+	lesson_id VARCHAR(36), 
+	score FLOAT NOT NULL, 
+	max_score FLOAT NOT NULL, 
+	percent FLOAT NOT NULL, 
+	ai_used BOOLEAN NOT NULL, 
+	uncertain BOOLEAN NOT NULL, 
+	details JSON NOT NULL, 
+	checked_at TIMESTAMP WITH TIME ZONE, 
+	id VARCHAR(36) NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE CASCADE, 
+	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL, 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_attempts_user_ex ON exercise_attempts (user_id, exercise_id);
+CREATE INDEX IF NOT EXISTS ix_exercise_attempts_exercise_id ON exercise_attempts (exercise_id);
+CREATE INDEX IF NOT EXISTS ix_exercise_attempts_lesson_id ON exercise_attempts (lesson_id);
+CREATE INDEX IF NOT EXISTS ix_exercise_attempts_user_id ON exercise_attempts (user_id);
+
+CREATE TABLE IF NOT EXISTS vocabulary_words (
 	book_id VARCHAR(36) NOT NULL, 
 	lesson_id VARCHAR(36), 
 	chapter_id VARCHAR(36), 
@@ -274,11 +360,14 @@ CREATE TABLE vocabulary_words (
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_vocab_term UNIQUE (book_id, term), 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
-	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL, 
-	FOREIGN KEY(chapter_id) REFERENCES chapters (id) ON DELETE SET NULL
+	FOREIGN KEY(chapter_id) REFERENCES chapters (id) ON DELETE SET NULL, 
+	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL
 );
-CREATE INDEX ix_vocabulary_words_book_id ON vocabulary_words (book_id);
-CREATE TABLE vocabulary_sessions (
+CREATE INDEX IF NOT EXISTS ix_vocabulary_words_book_id ON vocabulary_words (book_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_words_chapter_id ON vocabulary_words (chapter_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_words_lesson_id ON vocabulary_words (lesson_id);
+
+CREATE TABLE IF NOT EXISTS vocabulary_sessions (
 	user_id VARCHAR(36) NOT NULL, 
 	book_id VARCHAR(36), 
 	lesson_id VARCHAR(36), 
@@ -293,74 +382,15 @@ CREATE TABLE vocabulary_sessions (
 	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
-	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE CASCADE
-);
-CREATE INDEX ix_vocabulary_sessions_user_id ON vocabulary_sessions (user_id);
-CREATE TABLE learning_progress (
-	user_id VARCHAR(36) NOT NULL, 
-	lesson_id VARCHAR(36) NOT NULL, 
-	book_id VARCHAR(36) NOT NULL, 
-	status VARCHAR(24) NOT NULL, 
-	exercises_checked INTEGER NOT NULL, 
-	exercises_total INTEGER NOT NULL, 
-	time_spent_seconds INTEGER NOT NULL, 
-	last_page INTEGER NOT NULL, 
-	vocab_gate_passed BOOLEAN NOT NULL, 
-	last_visited_at TIMESTAMP WITH TIME ZONE, 
-	id VARCHAR(36) NOT NULL, 
-	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	PRIMARY KEY (id), 
-	CONSTRAINT uq_learning_progress UNIQUE (user_id, lesson_id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE CASCADE, 
-	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_learning_progress_lesson_id ON learning_progress (lesson_id);
-CREATE INDEX ix_learning_progress_user_id ON learning_progress (user_id);
-CREATE INDEX ix_learning_progress_book_id ON learning_progress (book_id);
-CREATE TABLE exercise_questions (
-	exercise_id VARCHAR(36) NOT NULL, 
-	order_index INTEGER NOT NULL, 
-	number VARCHAR(16) NOT NULL, 
-	prompt TEXT NOT NULL, 
-	passage TEXT NOT NULL, 
-	blanks JSON NOT NULL, 
-	matching_pairs JSON NOT NULL, 
-	correct_answers JSON NOT NULL, 
-	answer_source VARCHAR(16) NOT NULL, 
-	explanation_uz TEXT NOT NULL, 
-	needs_review BOOLEAN NOT NULL, 
-	id VARCHAR(36) NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE CASCADE
-);
-CREATE INDEX ix_exercise_questions_exercise_id ON exercise_questions (exercise_id);
-CREATE TABLE exercise_attempts (
-	user_id VARCHAR(36) NOT NULL, 
-	exercise_id VARCHAR(36) NOT NULL, 
-	lesson_id VARCHAR(36), 
-	score FLOAT NOT NULL, 
-	max_score FLOAT NOT NULL, 
-	percent FLOAT NOT NULL, 
-	ai_used BOOLEAN NOT NULL, 
-	uncertain BOOLEAN NOT NULL, 
-	details JSON NOT NULL, 
-	checked_at TIMESTAMP WITH TIME ZONE, 
-	id VARCHAR(36) NOT NULL, 
-	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
-	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE CASCADE, 
-	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL
-);
-CREATE INDEX ix_exercise_attempts_exercise_id ON exercise_attempts (exercise_id);
-CREATE INDEX ix_exercise_attempts_user_id ON exercise_attempts (user_id);
-CREATE INDEX ix_attempts_user_ex ON exercise_attempts (user_id, exercise_id);
-CREATE TABLE vocabulary_attempts (
+CREATE INDEX IF NOT EXISTS ix_vocabulary_sessions_book_id ON vocabulary_sessions (book_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_sessions_lesson_id ON vocabulary_sessions (lesson_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_sessions_user_id ON vocabulary_sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS vocabulary_attempts (
 	user_id VARCHAR(36) NOT NULL, 
 	word_id VARCHAR(36) NOT NULL, 
 	session_id VARCHAR(36), 
@@ -370,14 +400,16 @@ CREATE TABLE vocabulary_attempts (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	id VARCHAR(36) NOT NULL, 
 	PRIMARY KEY (id), 
+	FOREIGN KEY(session_id) REFERENCES vocabulary_sessions (id) ON DELETE SET NULL, 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
-	FOREIGN KEY(word_id) REFERENCES vocabulary_words (id) ON DELETE CASCADE, 
-	FOREIGN KEY(session_id) REFERENCES vocabulary_sessions (id) ON DELETE SET NULL
+	FOREIGN KEY(word_id) REFERENCES vocabulary_words (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_vocabulary_attempts_user_id ON vocabulary_attempts (user_id);
-CREATE INDEX ix_vocab_attempts_user_word ON vocabulary_attempts (user_id, word_id);
-CREATE INDEX ix_vocabulary_attempts_word_id ON vocabulary_attempts (word_id);
-CREATE TABLE vocabulary_progress (
+CREATE INDEX IF NOT EXISTS ix_vocab_attempts_user_word ON vocabulary_attempts (user_id, word_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_attempts_session_id ON vocabulary_attempts (session_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_attempts_user_id ON vocabulary_attempts (user_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_attempts_word_id ON vocabulary_attempts (word_id);
+
+CREATE TABLE IF NOT EXISTS vocabulary_progress (
 	user_id VARCHAR(36) NOT NULL, 
 	word_id VARCHAR(36) NOT NULL, 
 	ease_factor FLOAT NOT NULL, 
@@ -398,51 +430,54 @@ CREATE TABLE vocabulary_progress (
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(word_id) REFERENCES vocabulary_words (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_vocabulary_progress_word_id ON vocabulary_progress (word_id);
-CREATE INDEX ix_vocabulary_progress_due_at ON vocabulary_progress (due_at);
-CREATE INDEX ix_vocabulary_progress_user_id ON vocabulary_progress (user_id);
-CREATE TABLE ai_conversations (
+CREATE INDEX IF NOT EXISTS ix_vocabulary_progress_due_at ON vocabulary_progress (due_at);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_progress_user_id ON vocabulary_progress (user_id);
+CREATE INDEX IF NOT EXISTS ix_vocabulary_progress_word_id ON vocabulary_progress (word_id);
+
+CREATE TABLE IF NOT EXISTS learning_progress (
+	user_id VARCHAR(36) NOT NULL, 
+	lesson_id VARCHAR(36) NOT NULL, 
+	book_id VARCHAR(36) NOT NULL, 
+	status VARCHAR(24) NOT NULL, 
+	exercises_checked INTEGER NOT NULL, 
+	exercises_total INTEGER NOT NULL, 
+	time_spent_seconds INTEGER NOT NULL, 
+	last_page INTEGER NOT NULL, 
+	vocab_gate_passed BOOLEAN NOT NULL, 
+	last_visited_at TIMESTAMP WITH TIME ZONE, 
+	id VARCHAR(36) NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_learning_progress UNIQUE (user_id, lesson_id), 
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE, 
+	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE CASCADE, 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_learning_progress_book_id ON learning_progress (book_id);
+CREATE INDEX IF NOT EXISTS ix_learning_progress_lesson_id ON learning_progress (lesson_id);
+CREATE INDEX IF NOT EXISTS ix_learning_progress_user_id ON learning_progress (user_id);
+
+CREATE TABLE IF NOT EXISTS revision_sessions (
 	user_id VARCHAR(36) NOT NULL, 
 	book_id VARCHAR(36), 
-	lesson_id VARCHAR(36), 
-	exercise_id VARCHAR(36), 
-	title VARCHAR(255) NOT NULL, 
+	status VARCHAR(24) NOT NULL, 
+	focus VARCHAR(255) NOT NULL, 
+	reason TEXT NOT NULL, 
+	score FLOAT NOT NULL, 
+	items JSON NOT NULL, 
+	finished_at TIMESTAMP WITH TIME ZONE, 
 	id VARCHAR(36) NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE SET NULL, 
-	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL, 
-	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE SET NULL
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_ai_conversations_user_id ON ai_conversations (user_id);
-CREATE TABLE exercise_options (
-	question_id VARCHAR(36) NOT NULL, 
-	letter VARCHAR(4) NOT NULL, 
-	text TEXT NOT NULL, 
-	is_correct BOOLEAN, 
-	id VARCHAR(36) NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(question_id) REFERENCES exercise_questions (id) ON DELETE CASCADE
-);
-CREATE INDEX ix_exercise_options_question_id ON exercise_options (question_id);
-CREATE TABLE student_answers (
-	user_id VARCHAR(36) NOT NULL, 
-	question_id VARCHAR(36) NOT NULL, 
-	content JSON NOT NULL, 
-	is_submitted BOOLEAN NOT NULL, 
-	id VARCHAR(36) NOT NULL, 
-	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-	PRIMARY KEY (id), 
-	CONSTRAINT uq_student_answer UNIQUE (user_id, question_id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
-	FOREIGN KEY(question_id) REFERENCES exercise_questions (id) ON DELETE CASCADE
-);
-CREATE INDEX ix_student_answers_question_id ON student_answers (question_id);
-CREATE INDEX ix_student_answers_user_id ON student_answers (user_id);
-CREATE TABLE revision_items (
+CREATE INDEX IF NOT EXISTS ix_revision_sessions_book_id ON revision_sessions (book_id);
+CREATE INDEX IF NOT EXISTS ix_revision_sessions_user_id ON revision_sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS revision_items (
 	session_id VARCHAR(36) NOT NULL, 
 	item_type VARCHAR(24) NOT NULL, 
 	word_id VARCHAR(36), 
@@ -455,8 +490,29 @@ CREATE TABLE revision_items (
 	FOREIGN KEY(word_id) REFERENCES vocabulary_words (id) ON DELETE CASCADE, 
 	FOREIGN KEY(question_id) REFERENCES exercise_questions (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_revision_items_session_id ON revision_items (session_id);
-CREATE TABLE ai_messages (
+CREATE INDEX IF NOT EXISTS ix_revision_items_session_id ON revision_items (session_id);
+
+CREATE TABLE IF NOT EXISTS ai_conversations (
+	user_id VARCHAR(36) NOT NULL, 
+	book_id VARCHAR(36), 
+	lesson_id VARCHAR(36), 
+	exercise_id VARCHAR(36), 
+	title VARCHAR(255) NOT NULL, 
+	id VARCHAR(36) NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE SET NULL, 
+	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE SET NULL, 
+	FOREIGN KEY(lesson_id) REFERENCES lessons (id) ON DELETE SET NULL, 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_ai_conversations_book_id ON ai_conversations (book_id);
+CREATE INDEX IF NOT EXISTS ix_ai_conversations_exercise_id ON ai_conversations (exercise_id);
+CREATE INDEX IF NOT EXISTS ix_ai_conversations_lesson_id ON ai_conversations (lesson_id);
+CREATE INDEX IF NOT EXISTS ix_ai_conversations_user_id ON ai_conversations (user_id);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
 	conversation_id VARCHAR(36) NOT NULL, 
 	role VARCHAR(16) NOT NULL, 
 	content TEXT NOT NULL, 
@@ -469,13 +525,16 @@ CREATE TABLE ai_messages (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(conversation_id) REFERENCES ai_conversations (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_ai_messages_conv ON ai_messages (conversation_id, created_at);
-CREATE INDEX ix_ai_messages_conversation_id ON ai_messages (conversation_id);
+CREATE INDEX IF NOT EXISTS ix_ai_messages_conv ON ai_messages (conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_ai_messages_conversation_id ON ai_messages (conversation_id);
 
--- ============ ROW LEVEL SECURITY ============
--- NOTE: refresh_tokens/password_resets/usage_events are server-only tables;
--- the API uses the service connection which bypasses RLS. Policies below are
--- a defense-in-depth layer for any direct client (Supabase JS) access.
+-- ============================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES
+-- ============================================================
+-- All 27 tables have RLS enabled.
+-- Direct user_id tables check `user_id = lingora_current_user_id()`.
+-- Linked content tables check ownership via EXISTS JOIN to books or parent tables.
+-- ============================================================
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
@@ -505,94 +564,175 @@ ALTER TABLE ai_conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_events ENABLE ROW LEVEL SECURITY;
 
+-- 1. users
+DROP POLICY IF EXISTS "users_owner_all" ON users;
 CREATE POLICY "users_owner_all" ON users
-  FOR ALL USING (id::text = auth.uid()::text) WITH CHECK (id::text = auth.uid()::text);
-CREATE POLICY "profiles_owner_all" ON profiles
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "refresh_tokens_owner_all" ON refresh_tokens
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "password_resets_owner_all" ON password_resets
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "subscriptions_owner_all" ON subscriptions
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "books_owner_all" ON books
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "processing_jobs_owner_all" ON processing_jobs
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "book_pages_owner_all" ON book_pages
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "chapters_owner_all" ON chapters
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "lessons_owner_all" ON lessons
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "exercises_owner_all" ON exercises
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "exercise_questions_owner_all" ON exercise_questions
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "exercise_options_owner_all" ON exercise_options
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "answer_keys_owner_all" ON answer_keys
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "student_answers_owner_all" ON student_answers
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "exercise_attempts_owner_all" ON exercise_attempts
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "vocabulary_words_owner_all" ON vocabulary_words
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "vocabulary_sessions_owner_all" ON vocabulary_sessions
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "vocabulary_attempts_owner_all" ON vocabulary_attempts
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "vocabulary_progress_owner_all" ON vocabulary_progress
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "learning_progress_owner_all" ON learning_progress
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "activity_days_owner_all" ON activity_days
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "revision_sessions_owner_all" ON revision_sessions
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "revision_items_owner_all" ON revision_items
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "ai_conversations_owner_all" ON ai_conversations
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "ai_messages_owner_all" ON ai_messages
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
-CREATE POLICY "usage_events_owner_all" ON usage_events
-  FOR ALL USING (user_id::text = auth.uid()::text) WITH CHECK (user_id::text = auth.uid()::text);
+  FOR ALL USING (id = lingora_current_user_id()) WITH CHECK (id = lingora_current_user_id());
 
+-- 2. profiles
+DROP POLICY IF EXISTS "profiles_owner_all" ON profiles;
+CREATE POLICY "profiles_owner_all" ON profiles
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 3. refresh_tokens
+DROP POLICY IF EXISTS "refresh_tokens_owner_all" ON refresh_tokens;
+CREATE POLICY "refresh_tokens_owner_all" ON refresh_tokens
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 4. password_resets
+DROP POLICY IF EXISTS "password_resets_owner_all" ON password_resets;
+CREATE POLICY "password_resets_owner_all" ON password_resets
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 5. subscriptions
+DROP POLICY IF EXISTS "subscriptions_owner_all" ON subscriptions;
+CREATE POLICY "subscriptions_owner_all" ON subscriptions
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 6. books
+DROP POLICY IF EXISTS "books_owner_all" ON books;
+CREATE POLICY "books_owner_all" ON books
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 7. processing_jobs
+DROP POLICY IF EXISTS "processing_jobs_owner_all" ON processing_jobs;
+CREATE POLICY "processing_jobs_owner_all" ON processing_jobs
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 8. book_pages (via books.user_id)
 DROP POLICY IF EXISTS "book_pages_owner_all" ON book_pages;
 CREATE POLICY "book_pages_owner_all" ON book_pages
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = book_pages.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = book_pages.book_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = book_pages.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = book_pages.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 9. chapters (via books.user_id)
 DROP POLICY IF EXISTS "chapters_owner_all" ON chapters;
 CREATE POLICY "chapters_owner_all" ON chapters
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = chapters.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = chapters.book_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = chapters.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = chapters.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 10. lessons (via books.user_id)
 DROP POLICY IF EXISTS "lessons_owner_all" ON lessons;
 CREATE POLICY "lessons_owner_all" ON lessons
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = lessons.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = lessons.book_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = lessons.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = lessons.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 11. exercises (via books.user_id)
 DROP POLICY IF EXISTS "exercises_owner_all" ON exercises;
 CREATE POLICY "exercises_owner_all" ON exercises
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = exercises.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = exercises.book_id AND b.user_id::text = auth.uid()::text));
-DROP POLICY IF EXISTS "answer_keys_owner_all" ON answer_keys;
-CREATE POLICY "answer_keys_owner_all" ON answer_keys
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = answer_keys.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = answer_keys.book_id AND b.user_id::text = auth.uid()::text));
-DROP POLICY IF EXISTS "vocabulary_words_owner_all" ON vocabulary_words;
-CREATE POLICY "vocabulary_words_owner_all" ON vocabulary_words
-  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = vocabulary_words.book_id AND b.user_id::text = auth.uid()::text))
-  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = vocabulary_words.book_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = exercises.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = exercises.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 12. exercise_questions (via exercises -> books.user_id)
 DROP POLICY IF EXISTS "exercise_questions_owner_all" ON exercise_questions;
 CREATE POLICY "exercise_questions_owner_all" ON exercise_questions
-  FOR ALL USING (EXISTS (SELECT 1 FROM exercises e JOIN books b ON b.id = e.book_id WHERE e.id = exercise_questions.exercise_id AND b.user_id::text = auth.uid()::text)) WITH CHECK (EXISTS (SELECT 1 FROM exercises e JOIN books b ON b.id = e.book_id WHERE e.id = exercise_questions.exercise_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (
+    SELECT 1 FROM exercises e JOIN books b ON b.id = e.book_id
+    WHERE e.id = exercise_questions.exercise_id AND b.user_id = lingora_current_user_id()
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM exercises e JOIN books b ON b.id = e.book_id
+    WHERE e.id = exercise_questions.exercise_id AND b.user_id = lingora_current_user_id()
+  ));
+
+-- 13. exercise_options (via exercise_questions -> exercises -> books.user_id)
 DROP POLICY IF EXISTS "exercise_options_owner_all" ON exercise_options;
 CREATE POLICY "exercise_options_owner_all" ON exercise_options
-  FOR ALL USING (EXISTS (SELECT 1 FROM exercise_questions eq JOIN exercises e ON e.id = eq.exercise_id JOIN books b ON b.id = e.book_id WHERE eq.id = exercise_options.question_id AND b.user_id::text = auth.uid()::text)) WITH CHECK (EXISTS (SELECT 1 FROM exercise_questions eq JOIN exercises e ON e.id = eq.exercise_id JOIN books b ON b.id = e.book_id WHERE eq.id = exercise_options.question_id AND b.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (
+    SELECT 1 FROM exercise_questions eq
+    JOIN exercises e ON e.id = eq.exercise_id
+    JOIN books b ON b.id = e.book_id
+    WHERE eq.id = exercise_options.question_id AND b.user_id = lingora_current_user_id()
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM exercise_questions eq
+    JOIN exercises e ON e.id = eq.exercise_id
+    JOIN books b ON b.id = e.book_id
+    WHERE eq.id = exercise_options.question_id AND b.user_id = lingora_current_user_id()
+  ));
+
+-- 14. answer_keys (via books.user_id)
+DROP POLICY IF EXISTS "answer_keys_owner_all" ON answer_keys;
+CREATE POLICY "answer_keys_owner_all" ON answer_keys
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = answer_keys.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = answer_keys.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 15. student_answers (direct user_id)
+DROP POLICY IF EXISTS "student_answers_owner_all" ON student_answers;
+CREATE POLICY "student_answers_owner_all" ON student_answers
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 16. exercise_attempts (direct user_id)
+DROP POLICY IF EXISTS "exercise_attempts_owner_all" ON exercise_attempts;
+CREATE POLICY "exercise_attempts_owner_all" ON exercise_attempts
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 17. vocabulary_words (via books.user_id)
+DROP POLICY IF EXISTS "vocabulary_words_owner_all" ON vocabulary_words;
+CREATE POLICY "vocabulary_words_owner_all" ON vocabulary_words
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = vocabulary_words.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = vocabulary_words.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 18. vocabulary_sessions (direct user_id)
+DROP POLICY IF EXISTS "vocabulary_sessions_owner_all" ON vocabulary_sessions;
+CREATE POLICY "vocabulary_sessions_owner_all" ON vocabulary_sessions
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 19. vocabulary_attempts (direct user_id)
+DROP POLICY IF EXISTS "vocabulary_attempts_owner_all" ON vocabulary_attempts;
+CREATE POLICY "vocabulary_attempts_owner_all" ON vocabulary_attempts
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 20. vocabulary_progress (direct user_id)
+DROP POLICY IF EXISTS "vocabulary_progress_owner_all" ON vocabulary_progress;
+CREATE POLICY "vocabulary_progress_owner_all" ON vocabulary_progress
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 21. learning_progress (direct user_id)
+DROP POLICY IF EXISTS "learning_progress_owner_all" ON learning_progress;
+CREATE POLICY "learning_progress_owner_all" ON learning_progress
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 22. activity_days (direct user_id)
+DROP POLICY IF EXISTS "activity_days_owner_all" ON activity_days;
+CREATE POLICY "activity_days_owner_all" ON activity_days
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 23. revision_sessions (direct user_id)
+DROP POLICY IF EXISTS "revision_sessions_owner_all" ON revision_sessions;
+CREATE POLICY "revision_sessions_owner_all" ON revision_sessions
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 24. revision_items (via revision_sessions.user_id)
 DROP POLICY IF EXISTS "revision_items_owner_all" ON revision_items;
 CREATE POLICY "revision_items_owner_all" ON revision_items
-  FOR ALL USING (EXISTS (SELECT 1 FROM revision_sessions rs WHERE rs.id = revision_items.session_id AND rs.user_id::text = auth.uid()::text)) WITH CHECK (EXISTS (SELECT 1 FROM revision_sessions rs WHERE rs.id = revision_items.session_id AND rs.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (
+    SELECT 1 FROM revision_sessions rs
+    WHERE rs.id = revision_items.session_id AND rs.user_id = lingora_current_user_id()
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM revision_sessions rs
+    WHERE rs.id = revision_items.session_id AND rs.user_id = lingora_current_user_id()
+  ));
+
+-- 25. ai_conversations (direct user_id)
+DROP POLICY IF EXISTS "ai_conversations_owner_all" ON ai_conversations;
+CREATE POLICY "ai_conversations_owner_all" ON ai_conversations
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 26. ai_messages (via ai_conversations.user_id)
 DROP POLICY IF EXISTS "ai_messages_owner_all" ON ai_messages;
 CREATE POLICY "ai_messages_owner_all" ON ai_messages
-  FOR ALL USING (EXISTS (SELECT 1 FROM ai_conversations c WHERE c.id = ai_messages.conversation_id AND c.user_id::text = auth.uid()::text)) WITH CHECK (EXISTS (SELECT 1 FROM ai_conversations c WHERE c.id = ai_messages.conversation_id AND c.user_id::text = auth.uid()::text));
+  FOR ALL USING (EXISTS (
+    SELECT 1 FROM ai_conversations c
+    WHERE c.id = ai_messages.conversation_id AND c.user_id = lingora_current_user_id()
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM ai_conversations c
+    WHERE c.id = ai_messages.conversation_id AND c.user_id = lingora_current_user_id()
+  ));
+
+-- 27. usage_events (direct user_id)
+DROP POLICY IF EXISTS "usage_events_owner_all" ON usage_events;
+CREATE POLICY "usage_events_owner_all" ON usage_events
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());

@@ -11,10 +11,18 @@ httpx==0.28.*
 python-multipart==0.0.17
 PyMuPDF==1.25.*
 
+# --- Production Database Drivers (PostgreSQL & Supabase) ---
+psycopg2-binary>=2.9.9
+asyncpg>=0.30.0
+
+# --- Distributed Tasks & Caching (Celery + Redis) ---
+redis>=5.0.0
+celery>=5.4.0
+
+# --- OCR for Scanned Textbooks ---
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
 # --- Testing ---
 pytest==8.3.*
-
-# --- Optional (production / enhanced features). Install separately: ---
-# pytesseract==0.3.13        # OCR for scanned PDFs (requires tesseract binary, languages: eng+uzb)
-# celery==5.4.*              # distributed task queue (requires redis)
-# redis==5.*                 # redis client for celery + distributed rate limiting
+pytest-asyncio>=0.23.0

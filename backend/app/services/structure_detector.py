@@ -368,7 +368,8 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
             continue
         if (big and len(text.split()) <= 12 and line["page"] > 0
                 and not text.endswith((".", ",", ";", "?")) and not NUM_ITEM_RE.match(text)
-                and not OPTION_RE.match(text)):
+                and not OPTION_RE.match(text)
+                and not re.search(r"^(vocabulary|word\s*list|lug['`’]at)\b", text, re.I)):
             chapter_starts.append(line)
             continue
 
@@ -407,7 +408,7 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
                 structure.lessons.append({
                     "chapter_index": ch["order_index"], "title": l["text"].strip()[:200],
                     "page_start": l["page"],
-                    "page_end": in_lessons[j + 1]["page"] if j + 1 < len(in_lessons) else ch["page_end"],
+                    "page_end": in_lessons[j + 1]["page"] - 1 if j + 1 < len(in_lessons) else ch["page_end"],
                     "topic": guess_topic(l["text"]),
                 })
         else:

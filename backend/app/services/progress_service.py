@@ -1,5 +1,5 @@
 """Progress analytics: dashboard stats, topic strength/weakness, streaks, activity."""
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from app.models import (
     ExerciseAttempt,
     LearningProgress,
     Lesson,
+    Profile,
     VocabularyProgress,
     VocabularyWord,
 )
@@ -46,13 +47,19 @@ def dashboard(db: Session, user_id: str, daily_goal_minutes: int = 20) -> dict:
     percents = [a.percent for a in attempts if a.max_score > 0]
     avg_accuracy = round(sum(percents) / len(percents), 1) if percents else 0.0
 
-    vocab_total = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
+    # Total vocabulary words available across user's books vs progress records
+    book_vocab_count = int(db.scalar(
+        select(func.count(VocabularyWord.id)).join(Book, VocabularyWord.book_id == Book.id).where(Book.user_id == user_id)
+    ) or 0)
+    vocab_progress_count = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
         VocabularyProgress.user_id == user_id)) or 0)
+    vocab_total = max(book_vocab_count, vocab_progress_count)
+
     vocab_mastered = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
         VocabularyProgress.user_id == user_id, VocabularyProgress.status == "mastered")) or 0)
-    vocab_learning = vocab_total - vocab_mastered
+    vocab_learning = max(0, vocab_total - vocab_mastered)
     vocab_due = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
-        VocabularyProgress.user_id == user_id, VocabularyProgress.due_at <= datetime.utcnow())) or 0)
+        VocabularyProgress.user_id == user_id, VocabularyProgress.due_at <= datetime.now(timezone.utc))) or 0)
 
     today = date.today()
     activity = list(db.scalars(select(ActivityDay).where(
@@ -70,7 +77,20 @@ def dashboard(db: Session, user_id: str, daily_goal_minutes: int = 20) -> dict:
     ]
     study_minutes_total = round((int(db.scalar(
         select(func.coalesce(func.sum(ActivityDay.seconds), 0)).where(ActivityDay.user_id == user_id)) or 0)) / 60)
-    today_row = by_day.get(today.strftime("%Y-%m-%d"))
+    # Determine user's local date based on profile timezone
+    user_today = date.today()
+    profile = db.scalar(select(Profile).where(Profile.user_id == user_id))
+    if profile and profile.timezone:
+        try:
+            import zoneinfo
+
+            tz = zoneinfo.ZoneInfo(profile.timezone)
+            user_today = datetime.now(tz).date()
+        except Exception:
+            pass
+
+    today_str = user_today.strftime("%Y-%m-%d")
+    today_row = db.scalar(select(ActivityDay).where(ActivityDay.user_id == user_id, ActivityDay.day == today_str))
     today_minutes = round((today_row.seconds if today_row else 0) / 60, 1)
 
     weak, strong = topic_breakdown(db, user_id)
@@ -115,30 +135,49 @@ def topic_breakdown(db: Session, user_id: str, min_attempts: int = 2) -> tuple[l
 
 def heartbeat(db: Session, user_id: str, seconds: int, lesson_id: str | None = None,
               page: int | None = None) -> None:
+    """Records learning time with sanity caps (anti abuse) and user-timezone day tracking."""
+    # Cap seconds per single ping to prevent artificial time inflation (max 120s per ping)
     seconds = max(0, min(int(seconds), 120))
     if seconds == 0 and not lesson_id:
         return
-    day = datetime.now().strftime("%Y-%m-%d")
-    row = db.scalar(select(ActivityDay).where(ActivityDay.user_id == user_id, ActivityDay.day == day))
+
+    # Determine user's local date based on profile timezone
+    user_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    profile = db.scalar(select(Profile).where(Profile.user_id == user_id))
+    if profile and profile.timezone:
+        try:
+            import zoneinfo
+
+            tz = zoneinfo.ZoneInfo(profile.timezone)
+            user_day = datetime.now(tz).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    row = db.scalar(select(ActivityDay).where(ActivityDay.user_id == user_id, ActivityDay.day == user_day))
     if not row:
-        row = ActivityDay(user_id=user_id, day=day, seconds=0,
+        row = ActivityDay(user_id=user_id, day=user_day, seconds=0,
                           exercises_checked=0, answers_submitted=0, words_reviewed=0)
         db.add(row)
         db.flush()
     row.seconds += seconds
+
     if lesson_id:
         lesson = db.get(Lesson, lesson_id)
         if lesson:
-            lp = db.scalar(select(LearningProgress).where(
-                LearningProgress.user_id == user_id, LearningProgress.lesson_id == lesson_id))
-            if not lp:
-                lp = LearningProgress(user_id=user_id, lesson_id=lesson_id, book_id=lesson.book_id)
-                db.add(lp)
-                db.flush()
-            lp.time_spent_seconds += seconds
-            lp.last_visited_at = datetime.utcnow()
-            if page:
-                lp.last_page = int(page)
-            if lp.status == "not_started":
-                lp.status = "in_progress"
+            # Verify book belongs to user
+            book = db.get(Book, lesson.book_id)
+            if book and book.user_id == user_id:
+                lp = db.scalar(select(LearningProgress).where(
+                    LearningProgress.user_id == user_id, LearningProgress.lesson_id == lesson_id))
+                if not lp:
+                    lp = LearningProgress(user_id=user_id, lesson_id=lesson_id, book_id=lesson.book_id)
+                    db.add(lp)
+                    db.flush()
+                lp.time_spent_seconds += seconds
+                lp.last_visited_at = datetime.now(timezone.utc)
+                if page and 1 <= page <= book.page_count:
+                    lp.last_page = int(page)
+                if lp.status == "not_started":
+                    lp.status = "in_progress"
+
     db.commit()

@@ -3,12 +3,15 @@
 Uploaded books are PRIVATE — access always goes through authenticated, ownership-checked
 API endpoints. Books are never served publicly.
 """
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
 
 from app.core.config import settings
 from app.core.errors import ApiError
+
+log = logging.getLogger("lingora.storage")
 
 
 class StorageBackend(ABC):
@@ -22,7 +25,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def delete(self, storage_path: str) -> None:
-        """Delete the object if it exists."""
+        """Delete the object if it exists. Must raise if deletion failed so callers do not assume success."""
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -55,7 +58,11 @@ class LocalStorage(StorageBackend):
     def delete(self, storage_path: str) -> None:
         full = self._path(storage_path)
         if os.path.exists(full):
-            os.remove(full)
+            try:
+                os.remove(full)
+            except Exception as e:
+                log.error("Failed to delete local storage file: %s", type(e).__name__)
+                raise ApiError("STORAGE_DELETE_FAILED", "Faylni xotiradan o'chirishda xatolik yuz berdi.", 500)
         # clean up empty dirs up to storage root
         d = os.path.dirname(full)
         base = os.path.abspath(settings.storage_dir)
@@ -99,6 +106,7 @@ class SupabaseStorage(StorageBackend):
             timeout=120,
         )
         if resp.status_code not in (200, 201):
+            log.error("Supabase storage save failed with status %d", resp.status_code)
             raise ApiError("STORAGE_ERROR", f"Fayl saqlanmadi (Supabase {resp.status_code}).", 500)
         return rel
 
@@ -113,19 +121,24 @@ class SupabaseStorage(StorageBackend):
     def delete(self, storage_path: str) -> None:
         import httpx
 
-        httpx.delete(
-            f"{self.base}/object/{self.bucket}",
-            headers=self.headers,
-            json={"prefixes": [storage_path]},
-            timeout=60,
-        )
-
-
-_backend: StorageBackend | None = None
+        try:
+            resp = httpx.delete(
+                f"{self.base}/object/{self.bucket}",
+                headers=self.headers,
+                json={"prefixes": [storage_path]},
+                timeout=60,
+            )
+            if resp.status_code not in (200, 204):
+                log.error("Supabase storage delete failed with status %d", resp.status_code)
+                raise ApiError("STORAGE_DELETE_FAILED", "Bulutli xotiradan faylni o'chirish muvaffaqiyatsiz bo'ldi.", 500)
+        except ApiError:
+            raise
+        except Exception as e:
+            log.error("Supabase storage delete network error: %s", type(e).__name__)
+            raise ApiError("STORAGE_DELETE_FAILED", "Faylni o'chirishda xatolik yuz berdi.", 500)
 
 
 def get_storage() -> StorageBackend:
-    global _backend
-    if _backend is None:
-        _backend = SupabaseStorage() if settings.storage_backend == "supabase" else LocalStorage()
-    return _backend
+    if settings.storage_backend == "supabase":
+        return SupabaseStorage()
+    return LocalStorage()

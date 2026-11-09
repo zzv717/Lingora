@@ -1,54 +1,74 @@
-"use client";
-/** Browser-native text-to-speech (offline, no cloud) for vocabulary listening tasks. */
-export function speak(text: string, lang = "en-US", rate = 0.9): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return resolve();
-    try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = lang;
-      u.rate = rate;
-      u.onend = () => resolve();
-      u.onerror = () => resolve();
-      window.speechSynthesis.speak(u);
-      // safety resolve in case onend never fires
-      setTimeout(resolve, Math.max(2000, text.length * 120));
-    } catch {
-      resolve();
+/**
+ * Browser text-to-speech (TTS) and speech-to-text (STT) helpers.
+ * Runs 100% in the user's browser via the standard Web Speech API (zero cloud latency/cost).
+ */
+
+export function speak(text: string, lang = "en-US", voiceName?: string): void {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    u.rate = 0.95;
+    if (voiceName) {
+      const voices = window.speechSynthesis.getVoices();
+      const match = voices.find((v) => v.name === voiceName || v.lang === lang);
+      if (match) u.voice = match;
     }
-  });
+    window.speechSynthesis.speak(u);
+  } catch {
+    /* ignore unsupported environments */
+  }
 }
 
-export function ttsAvailable(): boolean {
-  return typeof window !== "undefined" && !!window.speechSynthesis;
+export function getEnglishVoices(): SpeechSynthesisVoice[] {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
+  return window.speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
 }
 
-/** Browser speech recognition (voice input for the AI tutor). Chrome/Edge only. */
 export function sttAvailable(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
-  );
+  if (typeof window === "undefined") return false;
+  return "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
 }
 
-export function listenOnce(onResult: (text: string) => void, lang = "uz-UZ"): () => void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  if (!SR) return () => {};
-  const rec = new SR();
-  rec.lang = lang;
-  rec.interimResults = false;
-  rec.maxAlternatives = 1;
-  rec.onresult = (e: unknown) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = (e as any).results?.[0]?.[0]?.transcript;
-    if (res) onResult(res);
+export function listenOnce(onResult: (text: string) => void, onError?: (err: string) => void): () => void {
+  if (!sttAvailable()) {
+    onError?.("Ovozni aniqlash brauzeringizda qo'llab-quvvatlanmaydi.");
+    return () => {};
+  }
+  const win = window as unknown as Record<string, unknown>;
+  const Speech = (win.SpeechRecognition || win.webkitSpeechRecognition) as new () => {
+    lang: string;
+    continuous: boolean;
+    interimResults: boolean;
+    onresult: (ev: { results?: { [key: number]: { [key: number]: { transcript?: string } } } }) => void;
+    onerror: (e: { error?: string }) => void;
+    start: () => void;
+    stop: () => void;
   };
-  rec.start();
+  const r = new Speech();
+  r.lang = "uz-UZ";
+  r.continuous = false;
+  r.interimResults = false;
+
+  r.onresult = (ev) => {
+    const transcript = ev.results?.[0]?.[0]?.transcript || "";
+    if (transcript.trim()) onResult(transcript.trim());
+  };
+
+  r.onerror = (e) => {
+    onError?.(e.error || "Ovoz yozishda xatolik yuz berdi");
+  };
+
+  try {
+    r.start();
+  } catch (err) {
+    onError?.("Mikrofonga ulanib bo'lmadi");
+  }
+
   return () => {
     try {
-      rec.stop();
+      r.stop();
     } catch {
       /* noop */
     }

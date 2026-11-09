@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { get, post } from "@/lib/api";
 import type { Dashboard } from "@/lib/types";
 import { TopBar } from "@/components/nav";
@@ -14,6 +15,7 @@ export default function ProgressPage() {
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
   const { toast } = useToast();
+  const router = useRouter();
 
   useEffect(() => {
     get<Dashboard>("/progress/dashboard")
@@ -24,9 +26,10 @@ export default function ProgressPage() {
   const buildRevision = async () => {
     setBuilding(true);
     try {
-      const res = await post<{ created: boolean; message_uz?: string }>("/revision/sessions");
-      if (res.created) {
+      const res = await post<{ created: boolean; session_id?: string; message_uz?: string }>("/revision/sessions");
+      if (res.created && res.session_id) {
         toast("Takrorlash seansi tayyor!", "success");
+        router.push(`/revision/${res.session_id}`);
       } else {
         toast(res.message_uz || "Takrorlash materiali topilmadi");
       }
@@ -124,12 +127,9 @@ export default function ProgressPage() {
             </div>
             <div className="rounded-xl bg-amber-50 py-3 dark:bg-amber-900/20">
               <p className="text-2xl font-bold text-amber-600 dark:text-amber-300">{stats.vocab_due}</p>
-              <p className="text-xs text-slate-500">takrorlash kerak</p>
+              <p className="text-xs text-slate-500">bugun takrorlash</p>
             </div>
           </div>
-          <Link href="/vocabulary" className="mt-3 block text-center text-sm text-brand-600 hover:underline dark:text-brand-400">
-            Lug'at mashg'ulotiga o'tish →
-          </Link>
         </Card>
       </main>
     </>

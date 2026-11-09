@@ -23,8 +23,7 @@ export default function VocabularyPage() {
       const ready = b.find((x) => x.status === "ready");
       if (ready) setSelected(ready.id);
     })().catch(() => toast("Ma'lumot yuklanmadi", "error"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     if (!selected) return;
@@ -36,7 +35,7 @@ export default function VocabularyPage() {
       const w = await get<VocabWord[]>(`/books/${selected}/vocabulary`);
       setWords(w);
     })().catch(() => toast("Lug'at yuklanmadi", "error"));
-  }, [selected]);
+  }, [selected, toast]);
 
   const startReview = async (lessonId?: string) => {
     setStarting(true);

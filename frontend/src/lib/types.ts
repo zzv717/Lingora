@@ -196,6 +196,7 @@ export interface VocabAnswerResult {
   word_id: string;
   term: string;
   translation_uz: string;
+  requeued_item?: VocabItem | null;
 }
 
 export interface Dashboard {

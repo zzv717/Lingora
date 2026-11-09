@@ -1,57 +1,48 @@
 # Lingora — DEVELOPMENT STATUS
 
-Oxirgi yangilanish: 2026-11-07 · Holat: **MVP barcha fazalari ishlaydi (Fazalar 1–7), 8-faza (deploy/docs) tayyor**
+Oxirgi yangilanish: 2026-11-09 · Holat: **Barcha fazalar (1–8) to'liq auditdan o'tgan, mustahkamlangan va 63/63 testlar bilan tasdiqlangan**
 
-## ✅ Yakunlangan funksiyalar
+## ✅ Yakunlangan funksiyalar va Xavfsizlik Auditi
 
-### Fazalar 1–2: Foundation + AI Book Analyzer
-- [x] FastAPI backend, mustaqil REST API (`/api/v1`), OpenAPI docs (`/docs`)
-- [x] 27 jadvallik PostgreSQL sxema (UUID PK, FK, indekslar, timestamps), Alembic migratsiyasi
-- [x] Supabase-native sxema + 37 ta owner-only RLS siyosati (`database/supabase_schema.sql`)
-- [x] Auth: ro'yxatdan o'tish, login, **refresh rotatsiyasi**, parol o'zgartirish, reset (SMTP ixtiyoriy — sozlanmagan dev rejimda havola ochiq beriladi, soxta "yuborildi" xabari yo'q), hisobni to'liq o'chirish
-- [x] Xavfsiz yuklash: PDF magic-bytes, hajm/sahifa limitlari, muallif huquqi roziligi majburiy, plan limitlari
-- [x] Pipeline: matn ajratish (PyMuPDF, koordinatalar bilan) → OCR (mavjud bo'lsa) → struktura detektor → saqlash → ixtiyoriy AI boyitish → validatsiya → ready
-- [x] Struktura detektori (deterministik, AI'siz ishlaydi): boblar/unitlar, darslar, 8 xil mashq turi, savollar, MC opsiyalari, moslashtirish juftliklari (2 ustun + chiziqcha), lug'at ro'yxatlari, javoblar kaliti (global ketma-ketlik + ref bo'yicha)
-- [x] Har savol uchun PDF-koordinatali bo'sh joy bboxlari → reader overlaylari uchun
-- [x] Processing progress: stage'lar o'zbek tilida, polling API, server restartida "qotib qolgan" joblar ochiq `INTERRUPTED` deb belgilanadi
-- [x] OCR binary yo'q bo'lsa: sahifa ochiq `OCR_UNAVAILABLE` warning bilan chetlab o'tiladi (hech narsa o'ylab topilmaydi)
+### 1. Xavfsizlik va Auth
+- [x] **Password Reset Token xavfsizligi**: Production rejimida token API javobida va loglarda hech qachon oshkor bo'lmaydi. Bir martalik ishlatiladi va avvalgi barcha faol sessiyalarni bekor qiladi.
+- [x] **Tutor & Mashq IDOR himoyasi**: Foydalanuvchi faqat o'ziga tegishli kitob, dars yoki mashq bo'yicha suhbat ochishi mumkin (`_verify_tutor_scope`). Boshqa foydalanuvchilar resurslari 404/403 bilan qat'iy bloklanadi.
+- [x] **Lug'at darvozasi (Vocabulary Gate)**: Backend darajasida `LESSON_LOCKED` 403 xatosi bilan to'liq himoyalangan (faqat UI'da tugmani o'chirib qo'yish bilan cheklanmagan).
+- [x] **Atomik Refresh Token rotatsiyasi**: Poyga (race condition) va token o'g'irlanishini aniqlash (`replay detection`) bilan to'liq himoyalangan.
+- [x] **Rate Limiting**: Redis qo'llab-quvvatlaydi, reverse proxy uchun `trusted_proxies` orqali IP spoofing'dan himoyalangan.
+- [x] **Production SECRET_KEY**: Ishlab chiqarish rejimida bo'sh yoki xavfli standart kalitda server darhol to'xtaydi (fail-fast).
+- [x] **Xavfsiz fayl boshqaruvi**: Path traversal hujumlariga qarshi tekshiruv va atomik fayllarni o'chirish.
 
-### Fazalar 3–4: Interactive Reader + AI Assessment
-- [x] pdf.js renderer (worker bundled, CDN yo'q — offline preview ishlaydi)
-- [x] Asl PDF sahifasi USTIDA bo'sh joy inputlari (ajratib olingan bbox koordinatalarida)
-- [x] Barcha mashq turlari uchun interaktiv panellar: MC, moslashtirish (tanlov-based, touch-friendly), tarjima, yozish, to'g'ri/xato, gap to'ldirish
-- [x] **Avtosaqlash** (debounce) + sahifa yangilanganda javoblarni tiklash (E2E test bilan tasdiqlangan)
-- [x] Baholash ustuvorligi: kitob kaliti → deterministik (normalizatsiya, raqamli, harf, juftlik, 1-xato tolerantligi) → AI (bitta strukturli JSON chaqiruvi, confidence) → noaniq = `unverified` (ochiq aytiladi)
-- [x] Muqobil javoblar, katta-kichik harf/belgisiz solishtirish, ko'p bo'shliqli savollar (kalit so'zlarga bo'lib baholanadi)
-- [x] Yozish/tarjima: AI talab qilinadi; AI yo'q bo'lsa "tekshirilmagan" + izoh (soxta baholash yo'q)
-- [x] AI ishlatilganda usage tracking + kunlik plan limitlari + xarajat bahosi
+### 2. Database & Supabase RLS
+- [x] Barcha 27 ta jadval uchun PostgreSQL DDL va to'liq RLS siyosatlari (`database/supabase_schema.sql`).
+- [x] Custom JWT va Supabase Auth o'rtasidagi arxitektura mosligi (`lingora_current_user_id()` funksiyasi orqali).
+- [x] PostgreSQL drayverlari (`psycopg2-binary`, `asyncpg`) to'liq qo'shilgan.
+- [x] Docker Compose: PostgreSQL 16, Redis 7, Celery Worker, FastAPI backend va Next.js frontend to'liq integratsiyasi.
 
-### Faza 5: Vocabulary
-- [x] Kitob/dars lug'atlari; AI sozlanganda avtomatik o'zbekcha tarjima
-- [x] Challenge generator: 7 savol turi, aralash, random tartib/opsiyalar, yozma recall MAJBURIY
-- [x] Xato so'zlar seans oxirida qayta beriladi; birinchi urinish bahoga asos
-- [x] SM-2 spaced repetition (toza funksiya, unit-testlangan), due-tracking, lapses, masterlik
-- [x] **Lug'at darvozasi**: keyingi dars faqat oldingi dars testi o'tilgach (sozlanadigan ball, default 80%) ochiladi
-- [x] Tinglash savollari brauzer TTS orqali (cloud yo'q)
+### 3. PDF Interaktiv Tahlil va Grading
+- [x] PDF.js va PyMuPDF yordamida original sahifa koordinatalari (`bbox`) bo'yicha interaktiv bo'shliqlar joylashtiriladi.
+- [x] Skanerlangan sahifalar uchun OCR holati haqiqiy va xolis ko'rsatiladi.
+- [x] Qayta tahlil qilinganda ma'lumotlar xavfsiz transactional tarzda qayta tiklanadi.
+- [x] Baholash ustuvorligi: Kitob javoblar kaliti > Deterministik qoidalar > AI baholash > Tekshirilmagan (unverified).
+- [x] Ko'p bo'shliqli mashqlar va muqobil to'g'ri javoblar to'liq qo'llab-quvvatlanadi.
 
-### Faza 6: AI Tutor
-- [x] Kontekstli chat: kitob + dars + mashq + oxirgi xatolar DB'dan yig'iladi
-- [x] O'zbek tili system prompt, kitob kontentini o'ylab topish taqiqlangan
-- [x] Qo'shimcha mashq generatsiyasi (strukturli, validatsiyali)
-- [x] Suhbatlar/messages saqlanadi; ovozli kiritish (Web Speech API), AI sozlanmagan bo'lsa ochiq banner
-- [x] TTS: brauzer native (offline)
+### 4. Vocabulary, Spaced Repetition (SM-2) & Revision
+- [x] Kitobdagi barcha so'zlar to'liq qamrab olinadi va kontekstiga qarab ajratiladi.
+- [x] 6 xil savol turlari, aralashtirilgan variantlar va majburiy yozma eslab qolish.
+- [x] Xato qilingan so'zlar avtomatik ravishda dars oxiriga qayta qo'shiladi (`requeued_item`).
+- [x] SM-2 algoritmi: qiyin yoki xato qilingan so'zlarda interval 0 ga tushib darhol qayta navbatga qo'yiladi.
+- [x] Server-side deterministik baholanadigan maxsus takrorlash sessiyalari (`revision sessions`).
 
-### Faza 7: Progress
-- [x] Dashboard: kitoblar, darslar, mashqlar, aniqlik, lug'at masterligi, o'qish vaqti, kunlik seriya, 14 kunlik faollik grafigi
-- [x] Zaif/kuchli mavzular (real urinishlar statistikasi asosida)
-- [x] Heartbeat (o'qish vaqti hisoblanadi), kunlik maqsad progressi
-- [x] Aqlli takrorlash: zaif mavzular savollari + SM-2 due so'zlar + muvaffaqiyatsiz testlar → revision seans
+### 5. Progress, Dashboard & Frontend
+- [x] Heartbeat vaqt hisobi: soxtalashtirishdan himoyalangan (ko'pi bilan 60s/so'rov, kuniga 10 soat limit), foydalanuvchi profilidagi vaqt zonasi (`timezone`) hisobga olinadi.
+- [x] Frontend to'liq TypeScript va Next.js 14 optimallashtirilgan holatda qurilgan (0 xato).
+- [x] Barcha sahifalar, dark/light rejim, PWA manifest va offline pdf.worker to'liq ishlaydi.
 
-### Faza 8: Production readiness
-- [x] 48 pytest: auth, rotatsiya, **mulkdorlik izolyatsiyasi**, yuklash validatsiyasi, to'liq pipeline (haqiqiy PDF), OCR halolligi, grading qoidalari, vocab randomizatsiya/darvoza/SM-2, dashboard, AI honesty
-- [x] E2E smoke (Next proxy → API): **18/18** tekshiruv
-- [x] Docker (backend, frontend, compose + postgres), `.env.example`, deploy hujjatlari
-- [x] Security: scrypt, JWT, refresh hash saqlash, rate limiting, xavfsizlik headerlari, path-traversal himoyasi, SQL ORM orqali, xatolarda stack-trace oshkor qilinmaydi
+### 6. Testlar va Sifat Kafolati
+- [x] **Backend Pytest to'plami: 63/63 PASS (100%)**
+- [x] **E2E Smoke: 13/13 PASS (100%)**
+- [x] **Frontend Build: 14/14 static va dynamic routelar muvaffaqiyatli qurildi**
+- [x] **GitHub Actions CI workflow: `.github/workflows/ci.yml` yaratildi**
 
 ## ⚠️ Muhit cheklovlari (halol holat)
 

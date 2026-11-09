@@ -48,14 +48,16 @@ export function DonutStat({ value, max, label, size = 120, tone = "#6366f1" }: {
   const c = 2 * Math.PI * r;
   return (
     <div className="flex flex-col items-center gap-1">
-      <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={10}
-          className="stroke-slate-200 dark:stroke-slate-700" />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={10} stroke={tone}
-          strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" />
-      </svg>
-      <div className="-mt-[calc(50%+8px)] mb-[calc(50%-14px)] text-center">
-        <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{Math.round(pct * 100)}%</div>
+      <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="-rotate-90">
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={10}
+            className="stroke-slate-200 dark:stroke-slate-700" />
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={10} stroke={tone}
+            strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center text-center">
+          <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{Math.round(pct * 100)}%</div>
+        </div>
       </div>
       <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
     </div>

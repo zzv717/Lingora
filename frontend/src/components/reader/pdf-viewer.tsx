@@ -2,11 +2,11 @@
 /**
  * PDF viewer with pdf.js: renders the ORIGINAL page on canvas and positions
  * interactive blank inputs (answer overlays) at their extracted PDF coordinates.
+ * Includes robust page loading state, cancellation, and ResizeObserver.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type * as Pdfjs from "pdfjs-dist";
 import { getAccessToken } from "@/lib/api";
-import { Spinner } from "@/components/ui";
+import { Button, Spinner } from "@/components/ui";
 
 export interface BlankOverlay {
   id: string;
@@ -31,17 +31,23 @@ export function PdfViewer({
   overlays?: BlankOverlay[];
   pageWidth?: number;
 }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfRef = useRef<any>(null);
+  // pdf.js document instance
+  const [pdfDoc, setPdfDoc] = useState<unknown>(null);
+  const [numPages, setNumPages] = useState<number>(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
   const [error, setError] = useState("");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [pageInfo, setPageInfo] = useState<any>(null);
+  const [pageInfo, setPageInfo] = useState<unknown>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
+  // Load PDF Document via state
   useEffect(() => {
     let cancelled = false;
+    setError("");
+    setRendering(true);
+    setPdfDoc(null);
+
     (async () => {
       try {
         const pdfjs = await import("pdfjs-dist");
@@ -50,66 +56,94 @@ export function PdfViewer({
           url: `/backend/api/v1/books/${bookId}/file`,
           httpHeaders: { authorization: `Bearer ${getAccessToken()}` },
         });
-        const pdf = await task.promise;
+        const doc = await task.promise;
         if (cancelled) {
-          pdf.destroy();
+          doc.destroy();
           return;
         }
-        pdfRef.current = pdf;
-        onPageCount?.(pdf.numPages);
+        setPdfDoc(doc);
+        setNumPages(doc.numPages);
+        onPageCount?.(doc.numPages);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "PDF yuklanmadi");
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "PDF yuklanmadi");
+          setRendering(false);
+        }
       }
     })();
+
     return () => {
       cancelled = true;
-      pdfRef.current?.destroy?.();
-      pdfRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookId]);
+  }, [bookId, reloadKey]);
 
+  // Render current page onto canvas with cancellation
   const render = useCallback(async () => {
-    const pdf = pdfRef.current;
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!pdf || !canvas || !container) return;
+    if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
     setRendering(true);
+    let renderTask: { promise: Promise<void> } | null = null;
+
     try {
-      const page = await pdf.getPage(Math.min(Math.max(pageNumber, 1), pdf.numPages));
+      const clampedPage = Math.min(Math.max(pageNumber, 1), (pdfDoc as { numPages: number }).numPages);
+      const page = await (pdfDoc as { getPage: (n: number) => Promise<any> }).getPage(clampedPage);
       setPageInfo(page);
-      const containerWidth = container.clientWidth - 4;
+
+      const container = containerRef.current;
+      const canvas = canvasRef.current;
+      if (!container || !canvas) return;
+
+      const containerWidth = container.clientWidth - 16;
       const base = pageWidth || page.getViewport({ scale: 1 }).width;
       const scale = Math.max(0.4, containerWidth / base);
       const viewport = page.getViewport({ scale });
       const dpr = window.devicePixelRatio || 1;
+
       canvas.width = viewport.width * dpr;
       canvas.height = viewport.height * dpr;
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      await page.render({ canvasContext: ctx, viewport }).promise;
-    } catch (e) {
-      // cancelled renders are fine
+
+      renderTask = page.render({ canvasContext: ctx, viewport });
+      if (renderTask) {
+        await renderTask.promise;
+      }
+    } catch (e: unknown) {
+      // Ignored if cancelled
+      if (e && typeof e === "object" && "name" in e && (e as { name: string }).name === "RenderingCancelledException") {
+        return;
+      }
     } finally {
       setRendering(false);
     }
-  }, [pageNumber, pageWidth]);
+  }, [pdfDoc, pageNumber, pageWidth]);
 
   useEffect(() => {
-    if (pdfRef.current) render();
-  }, [pdfRef.current, pageNumber, render]);
+    if (pdfDoc) {
+      render();
+    }
+  }, [pdfDoc, pageNumber, render]);
 
+  // ResizeObserver for reliable dimension scaling
   useEffect(() => {
-    const onResize = () => pdfRef.current && render();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [render]);
+    if (!containerRef.current) return;
+    let t: ReturnType<typeof setTimeout>;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        if (pdfDoc) render();
+      }, 100);
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [pdfDoc, render]);
 
   const scale = pageInfo && canvasRef.current
-    ? parseFloat(canvasRef.current.style.width) / (pageInfo.getViewport({ scale: 1 }).width)
+    ? parseFloat(canvasRef.current.style.width) / ((pageInfo as { getViewport: (opt: { scale: number }) => { width: number } }).getViewport({ scale: 1 }).width)
     : 0;
 
   return (
@@ -127,31 +161,35 @@ export function PdfViewer({
             type="number"
             value={pageNumber}
             min={1}
+            max={numPages || 1}
             onChange={(e) => {
               const n = parseInt(e.target.value);
-              if (n >= 1) onGoTo?.(n);
+              if (n >= 1 && n <= (numPages || 1)) onGoTo?.(n);
             }}
             className="w-16 rounded-lg border border-slate-300 bg-white px-2 py-1 text-center dark:border-slate-700 dark:bg-slate-800"
           />
-          <span>/ {pdfRef.current?.numPages ?? "…"}</span>
+          <span>/ {numPages || "…"}</span>
         </div>
         <button
           onClick={() => onGoTo?.(pageNumber + 1)}
-          disabled={!!pdfRef.current && pageNumber >= pdfRef.current.numPages}
+          disabled={numPages > 0 && pageNumber >= numPages}
           className="rounded-lg px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-300 dark:hover:bg-slate-800">
           Keyingi →
         </button>
       </div>
 
-      {/* page */}
+      {/* page canvas container */}
       <div ref={containerRef} className="thin-scroll relative flex-1 overflow-auto rounded-b-2xl bg-slate-200 p-2 dark:bg-slate-800">
         {error && (
-          <div className="m-6 rounded-xl bg-red-50 p-4 text-sm text-red-600 dark:bg-red-950/40 dark:text-red-300">
-            {error}
+          <div className="m-6 flex flex-col items-center justify-center gap-3 rounded-xl bg-red-50 p-6 text-center text-sm text-red-600 dark:bg-red-950/40 dark:text-red-300">
+            <p>{error}</p>
+            <Button size="sm" variant="secondary" onClick={() => setReloadKey((k) => k + 1)}>
+              Qayta urinish
+            </Button>
           </div>
         )}
         {rendering && !error && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-200/50 dark:bg-slate-800/50">
             <Spinner className="h-8 w-8 text-brand-500" />
           </div>
         )}

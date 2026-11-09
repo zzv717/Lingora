@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: lingora
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lingora_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set strong POSTGRES_PASSWORD in .env}
       POSTGRES_DB: lingora
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -19,7 +19,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # Only needed when TASK_BACKEND=celery
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   backend:
     build: ./backend
@@ -27,17 +31,33 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       ENV: prod
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
-      DATABASE_URL: postgresql://lingora:${POSTGRES_PASSWORD:-lingora_dev_password}@db:5432/lingora
+      APP_ENV: prod
+      SECRET_KEY: ${SECRET_KEY:?set strong SECRET_KEY in .env}
+      DATABASE_URL: postgresql://lingora:${POSTGRES_PASSWORD}@db:5432/lingora
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_DIR: /data/storage
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-lingora-books}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+      MAX_PAGES: ${MAX_PAGES:-300}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@lingora.app}
       AI_PROVIDER: ${AI_PROVIDER:-none}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-}
+      AI_DAILY_TOKEN_LIMIT: ${AI_DAILY_TOKEN_LIMIT:-0}
       TASK_BACKEND: ${TASK_BACKEND:-inline}
       REDIS_URL: redis://redis:6379/0
     volumes:
@@ -45,6 +65,33 @@ services:
     ports:
       - "8000:8000"
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  celery_worker:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENV: prod
+      APP_ENV: prod
+      SECRET_KEY: ${SECRET_KEY:?set strong SECRET_KEY in .env}
+      DATABASE_URL: postgresql://lingora:${POSTGRES_PASSWORD}@db:5432/lingora
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_DIR: /data/storage
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-}
+      TASK_BACKEND: celery
+      REDIS_URL: redis://redis:6379/0
+      AI_PROVIDER: ${AI_PROVIDER:-none}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+    volumes:
+      - storage:/data/storage
+    command: sh -c "celery -A app.tasks.celery_app.celery worker --loglevel=info -c 2"
 
   frontend:
     build: ./frontend

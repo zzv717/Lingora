@@ -1,6 +1,6 @@
 "use client";
 /** Vocabulary challenge runner: mixed question types, TTS listening, written recall,
- *  failed-word reintroduction, pass-score gate. */
+ *  failed-word reintroduction with sync refetching, pass-score gate. */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -27,9 +27,7 @@ export default function PracticePage() {
   const [error, setError] = useState("");
   const [done, setDone] = useState<DoneState | null>(null);
   const [busy, setBusy] = useState(false);
-  const [firstWrong, setFirstWrong] = useState<Record<string, boolean>>({});
   const inputRef = useRef<HTMLInputElement>(null);
-  const answeredRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     (async () => {
@@ -73,10 +71,19 @@ export default function PracticePage() {
         item_id: item.item_id,
         response,
       });
-      if (!answeredRef.current.has(item.item_id)) {
-        answeredRef.current.add(item.item_id);
-        if (!res.correct) setFirstWrong((f) => ({ ...f, [item.word_id]: true }));
+
+      // If word failed and was requeued, append it to local session state
+      if (res.requeued_item) {
+        setSession((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            items: [...prev.items, res.requeued_item!],
+            total_items: prev.total_items + 1,
+          };
+        });
       }
+
       setFeedback(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Xatolik");
@@ -90,7 +97,7 @@ export default function PracticePage() {
     setInput("");
     if (index + 1 < session.items.length) {
       setIndex(index + 1);
-      inputRef.current?.focus();
+      setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
     // finish
@@ -127,7 +134,6 @@ export default function PracticePage() {
 
   if (!item) return null;
   const isChoice = item.options.length > 0;
-  const answeredAll = session.items.every((i) => answeredRef.current.has(i.item_id));
 
   return (
     <main className="flex min-h-screen flex-col items-center px-4 py-8">
@@ -136,7 +142,7 @@ export default function PracticePage() {
           <Link href="/vocabulary" className="hover:text-brand-500">← Chiqish</Link>
           <span>{index + 1} / {session.items.length}</span>
         </div>
-        <Progress value={(index / session.items.length) * 100} />
+        <Progress value={((index + 1) / session.items.length) * 100} />
 
         <Card className="mt-4">
           <div className="mb-3 flex items-center justify-between">
@@ -182,6 +188,7 @@ export default function PracticePage() {
           ) : (
             <form onSubmit={(e) => { e.preventDefault(); feedback ? next() : submit(input); }}>
               <input
+                ref={inputRef}
                 autoFocus
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

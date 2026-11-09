@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.api.deps import get_current_user, owned_book
+from app.api.deps import get_current_profile, get_current_user, owned_book
 from app.core.config import settings
 from app.core.errors import ApiError
 from app.core.rate_limit import limit
@@ -20,8 +20,10 @@ from app.models import (
     ExerciseQuestion,
     LearningProgress,
     Lesson,
+    Profile,
     StudentAnswer,
     User,
+    VocabularyWord,
 )
 from app.schemas import (
     AnswersSaveIn,
@@ -33,7 +35,6 @@ from app.schemas import (
     QuestionOut,
     VerdictOut,
 )
-from fastapi import Request
 from app.services import grading as grading_engine
 from app.services.ai.provider import get_provider
 from app.services.progress_service import heartbeat as progress_heartbeat
@@ -42,13 +43,57 @@ log = logging.getLogger("lingora.exercises")
 router = APIRouter(tags=["exercises"])
 
 
-def _owned_exercise(db: Session, user: User, exercise_id: str) -> Exercise:
+def _check_lesson_gate(db: Session, user: User, profile: Profile, lesson: Lesson) -> None:
+    """Enforce vocabulary gating rule on the backend:
+    A lesson is locked if the previous lesson in the same book has vocabulary and the user has not passed its vocab gate.
+    If profile.vocabulary_gating is False, gating is disabled.
+    """
+    if not profile or not profile.vocabulary_gating:
+        return
+
+    # Find immediate previous lesson in this book
+    prev_lesson = db.scalar(
+        select(Lesson)
+        .where(Lesson.book_id == lesson.book_id, Lesson.order_index < lesson.order_index)
+        .order_by(Lesson.order_index.desc())
+        .limit(1)
+    )
+    if not prev_lesson:
+        return
+
+    # Check if previous lesson has vocabulary
+    has_vocab = db.query(VocabularyWord.id).filter(VocabularyWord.lesson_id == prev_lesson.id).count() > 0
+    if not has_vocab:
+        return
+
+    lp = db.scalar(
+        select(LearningProgress).where(
+            LearningProgress.user_id == user.id,
+            LearningProgress.lesson_id == prev_lesson.id,
+        )
+    )
+    if not (lp and lp.vocab_gate_passed):
+        raise ApiError(
+            "LESSON_LOCKED",
+            "Bu dars qulflangan. Avval oldingi darsning lug'at testini muvaffaqiyatli topshirishingiz kerak.",
+            403,
+        )
+
+
+def _owned_exercise(db: Session, user: User, exercise_id: str, profile: Profile | None = None) -> Exercise:
     ex = db.get(Exercise, exercise_id)
     if not ex:
         raise ApiError("EXERCISE_NOT_FOUND", "Mashq topilmadi.", 404)
     book = db.get(Book, ex.book_id)
     if not book or book.user_id != user.id:
         raise ApiError("EXERCISE_NOT_FOUND", "Mashq topilmadi.", 404)
+
+    # Check gating if exercise belongs to a lesson
+    if ex.lesson_id and profile is not None:
+        lesson = db.get(Lesson, ex.lesson_id)
+        if lesson:
+            _check_lesson_gate(db, user, profile, lesson)
+
     return ex
 
 
@@ -66,13 +111,22 @@ def _exercise_out(ex: Exercise, include_questions: bool = True) -> ExerciseOut:
 
 
 @router.get("/lessons/{lesson_id}/exercises", response_model=list[ExerciseOut])
-def lesson_exercises(lesson_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def lesson_exercises(
+    lesson_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
     lesson = db.get(Lesson, lesson_id)
     if not lesson:
         raise ApiError("LESSON_NOT_FOUND", "Dars topilmadi.", 404)
     book = db.get(Book, lesson.book_id)
     if not book or book.user_id != user.id:
         raise ApiError("LESSON_NOT_FOUND", "Dars topilmadi.", 404)
+
+    # Gating enforcement on exercises retrieval
+    _check_lesson_gate(db, user, profile, lesson)
+
     exercises = list(db.scalars(
         select(Exercise).where(Exercise.lesson_id == lesson_id)
         .options(joinedload(Exercise.questions).joinedload(ExerciseQuestion.options))
@@ -81,17 +135,29 @@ def lesson_exercises(lesson_id: str, db: Session = Depends(get_db), user: User =
 
 
 @router.get("/exercises/{exercise_id}", response_model=ExerciseOut)
-def get_exercise(exercise_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    ex = _owned_exercise(db, user, exercise_id)
+def get_exercise(
+    exercise_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
+    ex = _owned_exercise(db, user, exercise_id, profile=profile)
     db.refresh(ex)
     return _exercise_out(ex)
 
 
 @router.put("/exercises/{exercise_id}/answers", response_model=OkOut)
-def save_answers(exercise_id: str, data: AnswersSaveIn, db: Session = Depends(get_db),
-                 user: User = Depends(get_current_user)):
+def save_answers(
+    exercise_id: str,
+    data: AnswersSaveIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
     """Autosave — called on every change (debounced). Students never lose progress."""
-    ex = _owned_exercise(db, user, exercise_id)
+    limit(request, "answers_save", 300, 60, user.id)
+    ex = _owned_exercise(db, user, exercise_id, profile=profile)
     q_ids = {q.id for q in ex.questions}
     for ans in data.answers:
         if ans.question_id not in q_ids:
@@ -110,8 +176,13 @@ def save_answers(exercise_id: str, data: AnswersSaveIn, db: Session = Depends(ge
 
 
 @router.get("/exercises/{exercise_id}/answers", response_model=list[AnswerSaveIn])
-def get_saved_answers(exercise_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    ex = _owned_exercise(db, user, exercise_id)
+def get_saved_answers(
+    exercise_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
+    ex = _owned_exercise(db, user, exercise_id, profile=profile)
     rows = db.scalars(select(StudentAnswer).where(
         StudentAnswer.user_id == user.id,
         StudentAnswer.question_id.in_([q.id for q in ex.questions] or [""]))).all()
@@ -119,11 +190,16 @@ def get_saved_answers(exercise_id: str, db: Session = Depends(get_db), user: Use
 
 
 @router.post("/exercises/{exercise_id}/check", response_model=CheckOut)
-def check_exercise(exercise_id: str, request: Request, db: Session = Depends(get_db),
-                   user: User = Depends(get_current_user)):
+def check_exercise(
+    exercise_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
     """Grade with priority: book key -> deterministic rules -> AI -> uncertain/needs review."""
     limit(request, "check", 120, 3600, user.id)
-    ex = _owned_exercise(db, user, exercise_id)
+    ex = _owned_exercise(db, user, exercise_id, profile=profile)
     if not ex.questions:
         raise ApiError("EXERCISE_EMPTY", "Bu mashqda savollar yo'q.", 400)
 
@@ -146,7 +222,6 @@ def check_exercise(exercise_id: str, request: Request, db: Session = Depends(get
                 "grammar_note_uz": _grammar_note(ex),
             }
         elif q.correct_answers and q.answer_source == "ai":
-            # AI-suggested answers: verify with deterministic compare first
             given_text = _flatten_answer(answer)
             ok = grading_engine.answers_match(given_text, q.correct_answers)
             verdicts[q.id] = {
@@ -182,18 +257,18 @@ def check_exercise(exercise_id: str, request: Request, db: Session = Depends(get
         pass  # honest fallback below
 
     for q in pending_for_ai:
-        uncertain = True
-        verdicts[q.id] = {
-            "correct": None, "confidence": 0.0, "expected": _expected_repr(q),
-            "explanation_uz": (
-                "Bu javobni avtomatik baholash uchun AI kerak, lekin AI sozlanmagan. "
-                "Javobingiz saqlandi — murabbiy bilan tekshiring yoki AI sozlangach qayta tekshiring."
-            ),
-            "source": "unverified", "given": _flatten_answer(saved.get(q.id, {})),
-            "grammar_note_uz": "",
-        }
+        if q.id not in verdicts:
+            uncertain = True
+            verdicts[q.id] = {
+                "correct": None, "confidence": 0.0, "expected": _expected_repr(q),
+                "explanation_uz": (
+                    "Bu javobni avtomatik baholash uchun AI kerak, lekin AI sozlanmagan. "
+                    "Javobingiz saqlandi — murabbiy bilan tekshiring yoki AI sozlangach qayta tekshiring."
+                ),
+                "source": "unverified", "given": _flatten_answer(saved.get(q.id, {})),
+                "grammar_note_uz": "",
+            }
 
-    # score: unverified questions are excluded from the denominator (never fake-graded)
     graded = [v for v in verdicts.values() if v["correct"] is not None]
     max_score = float(len(graded)) if graded else 0.0
     score = float(sum(1 for v in graded if v["correct"]))
@@ -210,14 +285,12 @@ def check_exercise(exercise_id: str, request: Request, db: Session = Depends(get
     )
     db.add(attempt)
 
-    # mark answers submitted
     for qid in verdicts:
         row = db.scalar(select(StudentAnswer).where(
             StudentAnswer.user_id == user.id, StudentAnswer.question_id == qid))
         if row:
             row.is_submitted = True
 
-    # lesson progress
     if ex.lesson_id:
         lp = db.scalar(select(LearningProgress).where(
             LearningProgress.user_id == user.id, LearningProgress.lesson_id == ex.lesson_id))
@@ -272,8 +345,13 @@ def check_exercise(exercise_id: str, request: Request, db: Session = Depends(get
 
 
 @router.get("/exercises/{exercise_id}/attempts")
-def exercise_attempts(exercise_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    ex = _owned_exercise(db, user, exercise_id)
+def exercise_attempts(
+    exercise_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+):
+    ex = _owned_exercise(db, user, exercise_id, profile=profile)
     rows = db.scalars(select(ExerciseAttempt).where(
         ExerciseAttempt.user_id == user.id, ExerciseAttempt.exercise_id == ex.id)
         .order_by(ExerciseAttempt.created_at.desc()).limit(20)).all()

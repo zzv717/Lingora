@@ -52,18 +52,41 @@ def ai_calls_today(db: Session, user_id: str) -> int:
     ) or 0)
 
 
+def ai_tokens_today(db: Session, user_id: str) -> int:
+    total = db.scalar(
+        select(func.coalesce(func.sum(UsageEvent.tokens_in + UsageEvent.tokens_out), 0)).where(
+            UsageEvent.user_id == user_id, UsageEvent.day == _today(), UsageEvent.ok.is_(True)
+        )
+    )
+    return int(total or 0)
+
+
 def enforce_ai_quota(db: Session, user_id: str, feature: str) -> None:
     plan = get_user_plan(db, user_id)
     limits = settings.plan_limits(plan)
-    used = ai_calls_today(db, user_id)
-    if limits["ai_calls_per_day"] and used >= limits["ai_calls_per_day"]:
+    used_calls = ai_calls_today(db, user_id)
+    if limits["ai_calls_per_day"] and used_calls >= limits["ai_calls_per_day"]:
         plan_names = {"free": "Bepul", "pro": "Pro", "premium": "Premium"}
         raise ApiError(
             code="AI_QUOTA_EXCEEDED",
             message_uz=(
-                f"Kunlik AI limitiga yetdingiz ({used}/{limits['ai_calls_per_day']}). "
+                f"Kunlik AI so'rovlar limitiga yetdingiz ({used_calls}/{limits['ai_calls_per_day']}). "
                 f"{'{} rejasi'.format(plan_names.get(plan, plan))} limiti har kuni yangilanadi."
             ),
             http_status=429,
-            details={"feature": feature, "used": used, "limit": limits["ai_calls_per_day"]},
+            details={"feature": feature, "used": used_calls, "limit": limits["ai_calls_per_day"]},
         )
+
+    # Daily token limit (if configured, e.g. > 0)
+    if settings.ai_daily_token_limit > 0:
+        used_tokens = ai_tokens_today(db, user_id)
+        if used_tokens >= settings.ai_daily_token_limit:
+            raise ApiError(
+                code="AI_TOKEN_QUOTA_EXCEEDED",
+                message_uz=(
+                    f"Kunlik AI token limitiga yetdingiz ({used_tokens}/{settings.ai_daily_token_limit}). "
+                    "Limit ertaga yangilanadi."
+                ),
+                http_status=429,
+                details={"feature": feature, "used_tokens": used_tokens, "limit_tokens": settings.ai_daily_token_limit},
+            )

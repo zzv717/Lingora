@@ -61,14 +61,18 @@ def due_words(db: Session = Depends(get_db), user: User = Depends(get_current_us
 
 @router.get("/vocabulary/stats")
 def vocab_stats(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    total = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
+    book_vocab_count = int(db.scalar(
+        select(func.count(VocabularyWord.id)).join(Book, VocabularyWord.book_id == Book.id).where(Book.user_id == user.id)
+    ) or 0)
+    prog_total = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
         VocabularyProgress.user_id == user.id)) or 0)
+    total = max(book_vocab_count, prog_total)
     mastered = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
         VocabularyProgress.user_id == user.id, VocabularyProgress.status == "mastered")) or 0)
     due = int(db.scalar(select(func.count(VocabularyProgress.id)).where(
         VocabularyProgress.user_id == user.id,
         VocabularyProgress.due_at <= func.now())) or 0)
-    return {"learning": total - mastered, "mastered": mastered, "due": due, "total": total}
+    return {"learning": max(0, total - mastered), "mastered": mastered, "due": due, "total": total}
 
 
 @router.post("/vocabulary/sessions", response_model=VocabSessionOut, status_code=201)
@@ -90,7 +94,6 @@ def create_session(request: Request, book_id: str = "", lesson_id: str = "",
         if kind == "practice":
             kind = "lesson_gate"
         if kind == "lesson_gate":
-            # enforce gating: previous lesson must be passed first
             prev = db.scalar(select(Lesson).where(
                 Lesson.book_id == book.id, Lesson.order_index < lesson.order_index)
                 .order_by(Lesson.order_index.desc()).limit(1))
@@ -102,7 +105,7 @@ def create_session(request: Request, book_id: str = "", lesson_id: str = "",
                 if prev_vocab and not (lp and lp.vocab_gate_passed):
                     raise ApiError(
                         "LESSON_LOCKED",
-                        "Avval oldingi darsning lug'at testini o'tashingiz kerak. "
+                        "Avval oldingi darsning lug'at testini o'tishingiz kerak. "
                         "Bu — o'quv tartibi talabi.",
                         403,
                     )
@@ -117,8 +120,7 @@ def create_session(request: Request, book_id: str = "", lesson_id: str = "",
     if not session.items:
         raise ApiError(
             "NO_VOCABULARY",
-            "Bu dars/kitobda hali lug'at so'zlari topilmadi. AI tarjimasi sozlangan bo'lsa, "
-            "kitobni qayta tahlil qiling.",
+            "Bu dars/kitobda hali lug'at so'zlari topilmadi yoki takrorlash uchun so'zlar yo'q.",
             404,
         )
     return _session_out(session)
@@ -153,10 +155,25 @@ def answer(session_id: str, data: VocabAnswerIn, db: Session = Depends(get_db),
     if not item:
         raise ApiError("ITEM_NOT_FOUND", "Savol topilmadi.", 404)
     result = vocab_engine.answer_item(db, s, item, data.response)
-    return VocabAnswerOut(item_id=data.item_id, correct=result["correct"],
-                          expected=result["expected"], response=data.response,
-                          word_id=result["word_id"], term=result["term"],
-                          translation_uz=result["translation_uz"])
+    return VocabAnswerOut(
+        item_id=data.item_id,
+        correct=result["correct"],
+        expected=result["expected"],
+        response=data.response,
+        word_id=result["word_id"],
+        term=result["term"],
+        translation_uz=result["translation_uz"],
+        requeued_item=VocabSessionItemOut(
+            item_id=result["requeued_item"]["item_id"],
+            word_id=result["requeued_item"]["word_id"],
+            type=result["requeued_item"]["type"],
+            prompt=result["requeued_item"]["prompt"],
+            options=result["requeued_item"].get("options", []),
+            audio_text=result["requeued_item"].get("audio_text", ""),
+            sentence=result["requeued_item"].get("sentence", ""),
+            hint=result["requeued_item"].get("hint", ""),
+        ) if result.get("requeued_item") else None,
+    )
 
 
 @router.post("/vocabulary/sessions/{session_id}/complete", response_model=VocabSessionCompleteOut)

@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.models import (
     AIConversation,
     AIMessage,
+    Book,
     Exercise,
     ExerciseAttempt,
     Lesson,
@@ -39,7 +40,7 @@ SYSTEM_BASE = (
     "3. Javoblar aniq, sodda, tartiblangan bo'lsin (qisqa paragraflar, zarur bo'lsa ro'yxat va misollar).\n"
     "4. O'quvchi xatosini tushuntirsangiz, avval nima uchun xato ekanini, keyin to'g'ri qoidani, "
     "oxirida 1-2 mashq misolini bering.\n"
-    "5. O'zbek tili tabiiy va soddа bo'lsin (lotin yozuvi)."
+    "5. O'zbek tili tabiiy va sodda bo'lsin (lotin yozuvi)."
 )
 
 EXTRA_EXERCISE_SYSTEM = (
@@ -52,39 +53,51 @@ EXTRA_EXERCISE_SYSTEM = (
 
 
 def build_context(db: Session, user_id: str, conv: AIConversation) -> str:
+    """Builds tutor context strictly scoped to user_id (defense-in-depth ownership verification)."""
     parts: list[str] = ["=== KONTEKST ==="]
-    lesson: Lesson | None = db.get(Lesson, conv.lesson_id) if conv.lesson_id else None
     book_title = ""
-    if conv.book_id:
-        from app.models import Book
 
+    # Check book ownership
+    if conv.book_id:
         book = db.get(Book, conv.book_id)
-        book_title = book.title if book else ""
-    if book_title:
-        parts.append(f"O'quvchining kitobi: «{book_title}»")
-    if lesson:
-        parts.append(f"Ochilgan dars: «{lesson.title}» (sahifalar {lesson.page_start}-{lesson.page_end})")
-        if lesson.topic:
-            parts.append(f"Dars mavzusi: {lesson.topic}")
-        if lesson.grammar_explanation_uz:
-            parts.append(f"Dars tushuntirishi (uz): {lesson.grammar_explanation_uz[:1500]}")
-        words = list(db.scalars(select(VocabularyWord).where(
-            VocabularyWord.lesson_id == lesson.id).limit(15)).all())
-        if words:
-            parts.append("Dars lug'ati: " + "; ".join(f"{w.term} — {w.translation_uz}" for w in words))
+        if book and book.user_id == user_id:
+            book_title = book.title
+            parts.append(f"O'quvchining kitobi: «{book_title}»")
+
+    # Check lesson ownership
+    if conv.lesson_id:
+        lesson = db.get(Lesson, conv.lesson_id)
+        if lesson:
+            l_book = db.get(Book, lesson.book_id)
+            if l_book and l_book.user_id == user_id:
+                parts.append(f"Ochilgan dars: «{lesson.title}» (sahifalar {lesson.page_start}-{lesson.page_end})")
+                if lesson.topic:
+                    parts.append(f"Dars mavzusi: {lesson.topic}")
+                if lesson.grammar_explanation_uz:
+                    parts.append(f"Dars tushuntirishi (uz): {lesson.grammar_explanation_uz[:1500]}")
+                words = list(db.scalars(select(VocabularyWord).where(
+                    VocabularyWord.lesson_id == lesson.id).limit(15)).all())
+                if words:
+                    parts.append("Dars lug'ati: " + "; ".join(f"{w.term} — {w.translation_uz}" for w in words))
+
+    # Check exercise ownership
     if conv.exercise_id:
         ex = db.get(Exercise, conv.exercise_id)
         if ex:
-            parts.append(f"Muhokama qilinayotgan mashq: {ex.ref} (sahifa {ex.page_number}, {ex.exercise_type})")
-            parts.append(f"Mashq ko'rsatmasi: {ex.instructions[:300]}")
-            for q in ex.questions[:6]:
-                parts.append(f"  - Savol {q.number or q.order_index + 1}: {q.prompt[:200]}")
-    # recent mistakes (last 10 wrong answers in this book)
-    wrong = list(db.scalars(
-        select(ExerciseAttempt).where(
-            ExerciseAttempt.user_id == user_id,
-            ExerciseAttempt.book_id == conv.book_id if conv.book_id else ExerciseAttempt.user_id == user_id,
-        ).order_by(ExerciseAttempt.created_at.desc()).limit(5)).all())
+            e_book = db.get(Book, ex.book_id)
+            if e_book and e_book.user_id == user_id:
+                parts.append(f"Muhokama qilinayotgan mashq: {ex.ref} (sahifa {ex.page_number}, {ex.exercise_type})")
+                parts.append(f"Mashq ko'rsatmasi: {ex.instructions[:300]}")
+                for q in ex.questions[:6]:
+                    parts.append(f"  - Savol {q.number or q.order_index + 1}: {q.prompt[:200]}")
+
+    # Recent mistakes: STRICTLY filter by user_id
+    wrong_q = select(ExerciseAttempt).where(ExerciseAttempt.user_id == user_id)
+    if conv.book_id:
+        # join Exercise to ensure attempt belongs to this book
+        wrong_q = wrong_q.join(Exercise, ExerciseAttempt.exercise_id == Exercise.id).where(Exercise.book_id == conv.book_id)
+
+    wrong = list(db.scalars(wrong_q.order_by(ExerciseAttempt.created_at.desc()).limit(5)).all())
     mistake_lines = []
     for att in wrong:
         for d in att.details:
@@ -92,6 +105,7 @@ def build_context(db: Session, user_id: str, conv: AIConversation) -> str:
                 mistake_lines.append(f"{d.get('number','?')}: yozdi «{d.get('given','')}», to'g'risi «{d.get('expected','')}»")
     if mistake_lines:
         parts.append("O'quvchining so'nggi xatolari: " + "; ".join(mistake_lines[:8]))
+
     return "\n".join(parts)
 
 
@@ -121,54 +135,23 @@ def tutor_reply(db: Session, user_id: str, conv: AIConversation, user_message: s
     return msg, resp
 
 
-def generate_extra_exercises(db: Session, user_id: str, lesson: Lesson,
-                             count: int = 3) -> list[ExtraExerciseOut]:
-    """Generate additional practice exercises for a lesson (returned to client, stored as message meta)."""
-    from pydantic import BaseModel, Field
-
-    class _Q(BaseModel):
-        number: str = "1"
-        prompt: str
-        options: list[dict] = []
-        correct_answers: list[str] = []
-
-    class _Ex(BaseModel):
-        exercise_type: str
-        instructions: str = ""
-        topic: str = ""
-        questions: list[_Q]
-
-    class _Out(BaseModel):
-        exercises: list[_Ex]
-
+def generate_extra_exercises(db: Session, user_id: str, lesson: Lesson) -> list[ExtraExerciseOut]:
     usage_service.enforce_ai_quota(db, user_id, "extra_exercises")
-    words = list(db.scalars(select(VocabularyWord).where(
-        VocabularyWord.lesson_id == lesson.id).limit(10)).all())
-    context = {
-        "lesson_title": lesson.title, "topic": lesson.topic,
-        "grammar_uz": (lesson.grammar_explanation_uz or "")[:800],
-        "vocabulary": [f"{w.term} — {w.translation_uz}" for w in words],
-        "page_excerpt": (lesson.summary or "")[:600],
-    }
     provider = get_provider()
-    schema, resp = structured(
-        _Out,
-        [ChatMessage(role="system", content=EXTRA_EXERCISE_SYSTEM),
-         ChatMessage(role="user", content=json.dumps(context, ensure_ascii=False))],
-        max_tokens=2500,
-    )
+    prompt = f"Dars: {lesson.title}. Mavzu: {lesson.topic or 'Grammar practice'}. Tushuntirish: {lesson.grammar_explanation_uz[:800]}"
+    messages = [
+        ChatMessage(role="system", content=EXTRA_EXERCISE_SYSTEM),
+        ChatMessage(role="user", content=prompt),
+    ]
+    resp = provider.complete(messages, max_tokens=1500, temperature=0.3)
     usage_service.record_usage(db, user_id, "extra_exercises", provider.name, resp.model,
                                resp.tokens_in, resp.tokens_out)
-    out: list[ExtraExerciseOut] = []
-    for ex in schema.exercises[:count]:
-        qs = []
-        for q in ex.questions:
-            qs.append({
-                "number": q.number, "prompt": q.prompt,
-                "options": [o for o in q.options if o.get("text")],
-                "correct_answers": q.correct_answers,
-            })
-        out.append(ExtraExerciseOut(
-            exercise_type=ex.exercise_type, instructions=ex.instructions,
-            topic=ex.topic or lesson.topic, questions=qs))
-    return out
+    try:
+        from app.services.ai.provider import extract_json
+
+        data = extract_json(resp.content)
+        ex_list = data.get("exercises", [])
+        return [ExtraExerciseOut.model_validate(e) for e in ex_list]
+    except Exception as e:
+        log.warning("parsing extra exercises failed: %s", e)
+        return []

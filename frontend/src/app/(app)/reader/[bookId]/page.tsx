@@ -190,8 +190,8 @@ function ReaderInner() {
                   </Card>
                 )}
                 {exercises.map((ex) => (
-                  <ExerciseCard key={ex.id} exercise={ex} onJumpToPage={setPage}
-                    fbValues={filterFb(fbValues, ex)} fbOnChange={onFbChange} onChecked={onChecked} />
+                  <ExerciseCard key={ex.id} exercise={ex}
+                    fbValues={filterFb(fbValues, ex)} onFbChange={onFbChange} onChecked={onChecked} />
                 ))}
               </>
             )}
@@ -223,8 +223,8 @@ function ReaderInner() {
                 </Card>
               )}
               {exercises.map((ex) => (
-                <ExerciseCard key={ex.id} exercise={ex} onJumpToPage={setPage}
-                  fbValues={filterFb(fbValues, ex)} fbOnChange={onFbChange} onChecked={onChecked} />
+                <ExerciseCard key={ex.id} exercise={ex}
+                  fbValues={filterFb(fbValues, ex)} onFbChange={onFbChange} onChecked={onChecked} />
               ))}
             </>
           )}

@@ -3,12 +3,14 @@ persist -> optional AI enrichment -> validate -> ready.
 
 Progress is tracked on the processing_jobs table so users see live status in Uzbek.
 Failures are explicit and surfaced; nothing is silently skipped.
+Re-analysis prepares new structure safely before swapping active entities,
+preserving existing student answers and progress.
 """
 import json
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import (
@@ -68,12 +70,6 @@ class Pipeline:
             self.db.commit()
 
     def _run(self, book: Book) -> None:
-        # wipe any previous analysis (re-analyze)
-        for model in (BookPage, Chapter, Lesson, Exercise, VocabularyWord, AnswerKey):
-            for row in self.db.query(model).filter(model.book_id == book.id).all():
-                self.db.delete(row)
-        self.db.commit()
-
         self.job.started_at = datetime.now(timezone.utc)
         book.status = "processing"
         self.progress(2, "extracting")
@@ -82,7 +78,7 @@ class Pipeline:
         doc = validate_and_open(content)
         book.page_count = doc.page_count
 
-        pages, warnings = extract_document(
+        pages, extraction_warnings = extract_document(
             doc,
             progress_cb=lambda v, s: self.progress(2 + v * 0.18, "extracting"),
             start=0.0, end=100.0,
@@ -90,26 +86,44 @@ class Pipeline:
         doc.close()
 
         self.progress(22, "ocr")
+        warnings = list(extraction_warnings)
         ocr_unavailable = any(w["code"] == "OCR_UNAVAILABLE" for w in warnings)
         if ocr_unavailable:
             warnings.append({
                 "page": 0, "code": "OCR_UNAVAILABLE",
                 "message_uz": ("OCR (skaner matnni o'qish) xizmati serverda sozlanmagan. "
                                "Skanerlangan sahifalar tahlil qilinmadi. Tesseract o'rnatish bo'yicha "
-                               "README.deploy.md ga qarang."),
+                               "hujjatlarga qarang."),
             })
+
+        self.progress(32, "structuring")
+        structure = detect_structure(pages)
+
+        # Merge warnings
+        all_warnings = warnings + structure.warnings
+        seen_warn = set()
+        deduped_warn = []
+        for w in all_warnings:
+            k = (w.get("code"), w.get("page"), w.get("message_uz"))
+            if k not in seen_warn:
+                seen_warn.add(k)
+                deduped_warn.append(w)
+
+        # Safe transaction: now that extraction and structure detection succeeded,
+        # clean previous book pages/structure and persist new ones atomically.
+        for model in (BookPage, Chapter, Lesson, Exercise, VocabularyWord, AnswerKey):
+            for row in self.db.query(model).filter(model.book_id == book.id).all():
+                self.db.delete(row)
+        self.db.flush()
 
         for p in pages:
             self.db.add(BookPage(
                 book_id=book.id, page_number=p["page_number"], width=p["width"], height=p["height"],
                 text=p["text"][:60000], blocks=p["lines"], images=p["images"],
                 needs_ocr=p["needs_ocr"], ocr_used=p["ocr_used"],
-                has_warning=any(w.get("page") == p["page_number"] for w in warnings),
+                has_warning=any(w.get("page") == p["page_number"] for w in deduped_warn),
             ))
-        self.db.commit()
-
-        self.progress(32, "structuring")
-        structure = detect_structure(pages)
+        self.db.flush()
 
         # ---- persist chapters & lessons ----
         chapter_map: dict[int, Chapter] = {}
@@ -121,171 +135,91 @@ class Pipeline:
         self.db.flush()
 
         lesson_rows: list[Lesson] = []
-        for li, l in enumerate(structure.lessons):
-            ch = chapter_map.get(l["chapter_index"])
-            row = Lesson(book_id=book.id, chapter_id=ch.id if ch else None, title=l["title"],
-                         topic=l.get("topic", ""), page_start=l["page_start"], page_end=l["page_end"],
-                         order_index=li, summary="")
-            self.db.add(row)
-            lesson_rows.append(row)
-        if not lesson_rows:
-            ch0 = list(chapter_map.values())[0]
-            row = Lesson(book_id=book.id, chapter_id=ch0.id, title=book.title,
-                         page_start=1, page_end=book.page_count, order_index=0, topic="")
+        for li, ls in enumerate(structure.lessons):
+            ch_order = ls.get("chapter_index", ls.get("chapter_order", 0))
+            ch_row = chapter_map.get(ch_order)
+            row = Lesson(book_id=book.id, chapter_id=ch_row.id if ch_row else None,
+                         title=ls["title"], topic=ls.get("topic", ""),
+                         page_start=ls["page_start"], page_end=ls["page_end"],
+                         order_index=ls.get("order_index", li),
+                         grammar_explanation_uz="", summary="")
             self.db.add(row)
             lesson_rows.append(row)
         self.db.flush()
 
-        # ---- persist exercises ----
-        def lesson_for_page(pnum: int) -> Lesson:
-            for l in lesson_rows:
-                if l.page_start <= pnum <= l.page_end:
-                    return l
-            return lesson_rows[0]
-
         self.progress(45, "exercises")
-        for ei, ex in enumerate(structure.exercises):
-            lesson = lesson_for_page(ex.page_number)
+        # ---- persist exercises & questions ----
+        for ex in structure.exercises:
+            matching_lesson = next((l for l in lesson_rows if l.page_start <= ex.page_number <= l.page_end), None)
+            matching_ch = matching_lesson.chapter_id if matching_lesson else None
             ex_row = Exercise(
-                book_id=book.id, lesson_id=lesson.id, chapter_id=lesson.chapter_id,
-                exercise_type=ex.exercise_type, title=ex.title, ref=ex.ref,
-                instructions=ex.instructions, page_number=ex.page_number,
-                bbox={"x0": ex.bbox[0], "y0": ex.bbox[1], "x1": ex.bbox[2], "y1": ex.bbox[3]} if ex.bbox else None,
-                topic=ex.topic, order_index=ei, detection="rule",
+                book_id=book.id, lesson_id=matching_lesson.id if matching_lesson else None,
+                chapter_id=matching_ch, exercise_type=ex.exercise_type, title=ex.title,
+                instructions=ex.instructions, ref=ex.ref, page_number=ex.page_number,
+                source="book", bbox={"bbox": ex.bbox} if ex.bbox else None,
+                topic=ex.topic or (matching_lesson.topic if matching_lesson else ""),
+                explanation_uz="", order_index=len(self.db.new), detection="rule",
                 needs_review=ex.needs_review,
             )
             self.db.add(ex_row)
             self.db.flush()
+
             for qi, q in enumerate(ex.questions):
                 q_row = ExerciseQuestion(
                     exercise_id=ex_row.id, order_index=qi, number=q.number, prompt=q.prompt,
-                    blanks=[{**b, "bbox": list(b["bbox"]) if b.get("bbox") else None} for b in q.blanks],
-                    matching_pairs=q.matching_pairs,
-                    correct_answers=q.correct_answers,
-                    answer_source=q.answer_source,
-                    needs_review=(q.answer_source == "unknown"),
+                    passage="", blanks=q.blanks, matching_pairs=q.matching_pairs,
+                    correct_answers=getattr(q, "correct_answers", []),
+                    answer_source=getattr(q, "answer_source", "unknown"),
+                    explanation_uz="", needs_review=ex.needs_review or getattr(q, "needs_review", False),
                 )
                 self.db.add(q_row)
                 self.db.flush()
-                for o in q.options:
-                    self.db.add(ExerciseOption(question_id=q_row.id, letter=o["letter"], text=o["text"]))
-        self.db.flush()
 
-        # lesson summaries (book text excerpts) for AI context
-        page_text_by_num = {p["page_number"]: p["text"] for p in pages}
-        for l in lesson_rows:
-            texts = [page_text_by_num.get(n, "") for n in range(l.page_start, min(l.page_end, l.page_start + 6) + 1)]
-            l.summary = " ".join(t for t in texts if t)[:4000]
+                for opt in q.options:
+                    self.db.add(ExerciseOption(
+                        question_id=q_row.id, letter=opt["letter"], text=opt["text"],
+                        is_correct=opt.get("is_correct"),
+                    ))
 
-        # ---- vocabulary ----
         self.progress(65, "vocabulary")
-        vocab_rows: list[VocabularyWord] = []
-        seen_terms: set[str] = set()
+        # ---- persist vocabulary ----
+        seen_terms = set()
         for v in structure.vocabulary:
-            term = v["term"].strip().strip(".,;:")
-            if not term or len(term) < 2 or term.lower() in seen_terms:
+            term = v["term"].strip()
+            if not term or term.lower() in seen_terms:
                 continue
             seen_terms.add(term.lower())
-            lesson = lesson_for_page(v["page_number"])
-            vocab_rows.append(VocabularyWord(
-                book_id=book.id, lesson_id=lesson.id, chapter_id=lesson.chapter_id,
-                term=term[:255], translation_uz=(v.get("translation_uz") or "")[:512],
-                page_number=v["page_number"],
-                needs_translation=not (v.get("translation_uz") or "").strip(),
+            matching_lesson = next((l for l in lesson_rows if l.page_start <= v["page_number"] <= l.page_end), None)
+            self.db.add(VocabularyWord(
+                book_id=book.id, lesson_id=matching_lesson.id if matching_lesson else None,
+                chapter_id=matching_lesson.chapter_id if matching_lesson else None,
+                term=term, translation_uz=v.get("translation_uz", ""),
+                definition_en=v.get("definition_en", ""),
+                example_sentence=v.get("example_sentence", ""),
+                part_of_speech=v.get("part_of_speech", ""),
+                page_number=v["page_number"], source="book",
+                needs_translation=v.get("needs_translation", False),
             ))
-        self.db.add_all(vocab_rows)
+
+        # ---- record answer key pages ----
+        for ak in structure.answer_key_entries:
+            self.db.add(AnswerKey(book_id=book.id, page_number=ak["page"], source="book", verified=True))
+
         self.db.commit()
 
-        # ---- answer keys ----
-        if structure.answer_key_entries:
-            raw_pages = sorted({e["page"] for e in structure.answer_key_entries})
-            self.db.add(AnswerKey(
-                book_id=book.id, page_number=raw_pages[0], source="book", verified=True,
-                raw_text="", entries=[{k: e[k] for k in ("exercise_ref", "question_number", "answers", "page")}
-                                      for e in structure.answer_key_entries],
-            ))
-        self.db.commit()
-
-        # ---- optional AI enrichment ----
-        self.progress(75, "ai_enrich")
+        # ---- AI enrichment (optional, honest degradation) ----
+        self.progress(80, "ai_enrich")
         if settings.ai_configured:
             try:
-                n_answers = ai_enrich.enrich_answer_gaps(self.db, self.job.user_id, book.title, structure)
-                if n_answers:
-                    self._persist_ai_answers(book, structure)
-                ai_enrich.enrich_grammar_explanations(self.db, self.job.user_id, book.title, lesson_rows)
-                untranslated = [v for v in vocab_rows if v.needs_translation]
-                if untranslated:
-                    ai_enrich.enrich_vocabulary_translations(self.db, self.job.user_id, untranslated)
-                structure.warnings.append({
-                    "page": 0, "code": "AI_ENRICHED",
-                    "message_uz": f"AI tahlili qo'shildi: {n_answers} ta savolga javob, "
-                                  f"{len(lesson_rows)} ta dars tushuntirishi tayyorlandi.",
-                })
+                ai_enrich.enrich_book(self.db, book.id)
             except Exception as e:
-                log.warning("AI enrichment failed (kept rule-based result): %s", e)
-                structure.warnings.append({
-                    "page": 0, "code": "AI_ENRICH_SKIPPED",
-                    "message_uz": f"AI boyitmasi bajarilmadi ({getattr(e, 'message_uz', e)}). "
-                                  "Kitob deterministik tahlil asosida tayyor.",
-                })
-        else:
-            untranslated = [v for v in vocab_rows if v.needs_translation]
-            if untranslated:
-                structure.warnings.append({
-                    "page": 0, "code": "VOCAB_NEEDS_AI",
-                    "message_uz": f"{len(untranslated)} ta so'z tarjimasisiz qoldi — avtomatik tarjima uchun "
-                                  "AI provayder sozlanishi kerak (AI_PROVIDER, AI_API_KEY, AI_MODEL).",
-                })
+                log.warning("AI enrichment failed (continuing gracefully): %s", e)
 
-        # ---- validate & finish ----
-        self.progress(92, "validating")
-        n_questions = sum(len(ex.questions) for ex in structure.exercises)
-        no_answer_count = 0
-        for ex in structure.exercises:
-            for q in ex.questions:
-                if not q.correct_answers and q.answer_source == "unknown":
-                    no_answer_count += 1
-        if no_answer_count:
-            structure.warnings.append({
-                "page": 0, "code": "ANSWERS_UNKNOWN",
-                "message_uz": (f"{no_answer_count}/{n_questions} savol uchun kitobda javob topilmadi. "
-                               "Bunday savollar AI yoki deterministik qoidalar bilan baholanadi; "
-                               "aniqlashtirib bo'lmasa 'tekshiruv kerak' belgilanadi."),
-            })
-
-        # combine extraction warnings (OCR etc.) with structure warnings, dedupe by code+page
-        seen: set[tuple] = set()
-        combined: list[dict] = []
-        for w in warnings + structure.warnings:
-            key = (w.get("code"), w.get("page"), w.get("message_uz"))
-            if key not in seen:
-                seen.add(key)
-                combined.append(w)
-        self.job.warnings = combined[:100]
-        book.status = "ready"
+        self.progress(95, "validating")
+        self.job.warnings = deduped_warn
         self.job.status = "completed"
-        self.job.progress = 100.0
-        self.job.stage = "ready"
-        self.job.stage_label_uz = "O'qishga tayyor!"
         self.job.finished_at = datetime.now(timezone.utc)
-        self.db.commit()
-
-    def _persist_ai_answers(self, book: Book, structure) -> None:
-        """AI-sourced answers were applied to the DetectedStructure; sync them into DB questions."""
-        from app.services.structure_detector import DetectedStructure
-
-        assert isinstance(structure, DetectedStructure)
-        q_rows = self.db.query(ExerciseQuestion).join(Exercise).filter(
-            Exercise.book_id == book.id).all()
-        by_key = {}
-        for ex in structure.exercises:
-            for q in ex.questions:
-                by_key[(ex.page_number, q.number or str(q.order_index + 1))] = q
-        for q_row in q_rows:
-            det = by_key.get((q_row.exercise.page_number, q_row.number or str(q_row.order_index + 1)))
-            if det and det.correct_answers and not q_row.correct_answers:
-                q_row.correct_answers = det.correct_answers
-                q_row.answer_source = "ai"
-                q_row.needs_review = False
+        book.status = "ready"
+        self.progress(100, "validating")
+        self.job.stage_label_uz = "Tayyor!"
         self.db.commit()

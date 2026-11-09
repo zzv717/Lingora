@@ -58,27 +58,46 @@ def generate_session(db: Session, *, user_id: str, book_id: str | None, lesson_i
     if not words:
         return VocabularySession(user_id=user_id, book_id=book_id, lesson_id=lesson_id,
                                  kind=kind, required_score=required_score, items=[])
-    words = words[:60]
 
-    # Prioritize: due (SRS) first, then never-seen, then rest; randomized inside groups
+    # In review mode, select ONLY words that are due for SRS review
     now = _utcnow()
     progress = {p.word_id: p for p in db.scalars(select(VocabularyProgress).where(
         VocabularyProgress.user_id == user_id,
         VocabularyProgress.word_id.in_([w.id for w in words]))).all()}
-    due = [w for w in words if w.id in progress and ensure_utc(progress[w.id].due_at) <= now]
-    fresh = [w for w in words if w.id not in progress]
-    rest = [w for w in words if w.id in progress and ensure_utc(progress[w.id].due_at) > now]
-    random.shuffle(due); random.shuffle(fresh); random.shuffle(rest)
-    chosen = (due + fresh + rest)[:limit]
+
+    if kind == "review":
+        due_words = [w for w in words if w.id in progress and ensure_utc(progress[w.id].due_at) <= now]
+        if not due_words:
+            # If no words due, return empty session or take lapsed words
+            return VocabularySession(user_id=user_id, book_id=book_id, lesson_id=lesson_id,
+                                     kind=kind, required_score=required_score, items=[])
+        random.shuffle(due_words)
+        chosen = due_words[:limit]
+    else:
+        # Prioritize: due (SRS) first, then never-seen, then rest from entire word bank
+        due = [w for w in words if w.id in progress and ensure_utc(progress[w.id].due_at) <= now]
+        fresh = [w for w in words if w.id not in progress]
+        rest = [w for w in words if w.id in progress and ensure_utc(progress[w.id].due_at) > now]
+        random.shuffle(due); random.shuffle(fresh); random.shuffle(rest)
+        chosen = (due + fresh + rest)[:limit]
 
     all_terms = [w.term for w in words]
     all_translations = [w.translation_uz.split(",")[0].strip() for w in words]
 
     items = []
+    # Ensure at least 1-2 written recall questions in every session
+    written_count = 0
     for w in chosen:
         qtype = _pick_type(w, seen=set(i["type"] for i in items))
+        if qtype in ("written_en_uz", "written_uz_en", "spelling"):
+            written_count += 1
         item = _build_item(w, qtype, all_terms, all_translations, pool_words=words)
         items.append(item)
+
+    # Force at least one written recall if none were selected
+    if written_count == 0 and items:
+        target_w = next(w for w in chosen if w.id == items[0]["word_id"])
+        items[0] = _build_item(target_w, "written_en_uz", all_terms, all_translations, pool_words=words)
 
     # interleave types so sequences are never predictable
     random.shuffle(items)
@@ -93,7 +112,15 @@ def generate_session(db: Session, *, user_id: str, book_id: str | None, lesson_i
 
 
 def _pick_type(w: VocabularyWord, seen: set[str]) -> str:
-    choices = ["written_en_uz", "choice_uz_en", "written_uz_en", "sentence_blank", "choice_en_uz", "spelling"]
+    choices = [
+        "written_en_uz",
+        "choice_uz_en",
+        "written_uz_en",
+        "sentence_blank",
+        "choice_en_uz",
+        "spelling",
+        "listening",
+    ]
     if w.example_sentence:
         choices = ["sentence_blank"] + choices
     for c in random.sample(choices, len(choices)):
@@ -162,7 +189,7 @@ def answer_item(db: Session, session: VocabularySession, item: dict, response: s
 
     first = item.get("first_correct")
     first_correct = correct if first is None else first
-    updated_item = {**item, "attempts": item.get("attempts", 0) + 1, "first_correct": first_correct}
+    updated_item = {**item, "attempts": item.get("attempts", 0) + 1, "first_correct": first_correct, "answered": True}
 
     db.add(VocabularyAttempt(
         user_id=session.user_id, word_id=word.id, session_id=session.id,
@@ -182,16 +209,26 @@ def answer_item(db: Session, session: VocabularySession, item: dict, response: s
     # rebuild the JSON list (in-place mutation is not tracked by SQLAlchemy)
     new_items = [updated_item if it["item_id"] == item["item_id"] else it for it in session.items]
     # failed words are reintroduced at the end of the session
+    requeued_item = None
     if not correct and not item.get("requeued"):
         re_item = {**item, "item_id": secrets.token_hex(8), "attempts": 0,
-                   "first_correct": None, "requeued": True}
+                   "first_correct": None, "answered": False, "requeued": True}
         new_items.append(re_item)
+        requeued_item = re_item
+
     session.items = new_items
 
     _bump_activity(db, session.user_id, words_reviewed=1)
     db.commit()
-    return {"correct": bool(correct), "expected": expected,
-            "term": word.term, "translation_uz": word.translation_uz, "word_id": word.id}
+    return {
+        "correct": bool(correct),
+        "expected": expected,
+        "term": word.term,
+        "translation_uz": word.translation_uz,
+        "word_id": word.id,
+        "requeued_item": requeued_item,
+        "session_items_count": len(new_items),
+    }
 
 
 def first_attempt_score(session: VocabularySession) -> float:
@@ -202,6 +239,19 @@ def first_attempt_score(session: VocabularySession) -> float:
 
 
 def complete_session(db: Session, session: VocabularySession) -> dict:
+    # Ensure all required (original non-requeued) items have at least one answer attempt
+    original_items = [i for i in session.items if not i.get("requeued")]
+    unanswered = [i for i in original_items if i.get("first_correct") is None]
+    if unanswered:
+        return {
+            "status": "incomplete",
+            "score": 0.0,
+            "required_score": session.required_score,
+            "passed": False,
+            "gate_opened": False,
+            "message_uz": f"Seans hali tugamagan ({len(unanswered)} ta savol javobsiz).",
+        }
+
     score = first_attempt_score(session)
     session.score = score
     passed = score >= session.required_score
@@ -237,7 +287,3 @@ def _bump_activity(db: Session, user_id: str, *, words_reviewed: int = 0,
         row = AD(user_id=user_id, day=day, seconds=0,
                  exercises_checked=0, answers_submitted=0, words_reviewed=0)
         db.add(row)
-        db.flush()
-    row.words_reviewed += words_reviewed
-    row.exercises_checked += exercises_checked
-    row.seconds += seconds

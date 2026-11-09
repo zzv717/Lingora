@@ -276,6 +276,7 @@ class VocabAnswerOut(BaseModel):
     word_id: str
     term: str
     translation_uz: str
+    requeued_item: Optional[VocabSessionItemOut] = None
 
 
 class VocabSessionCompleteOut(BaseModel):

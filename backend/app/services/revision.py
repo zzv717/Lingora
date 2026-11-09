@@ -1,5 +1,7 @@
 """Smart revision: builds sessions from the student's REAL history —
-weak grammar topics (low accuracy), due/failed vocabulary (SM-2), failed assessments."""
+weak grammar topics (low accuracy), due/failed vocabulary (SM-2), failed assessments.
+Grades answers server-side deterministically (never trusts client correct=true).
+"""
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -15,7 +17,7 @@ from app.models import (
     VocabularySession,
     VocabularyWord,
 )
-from app.services.vocab_engine import generate_session
+from app.services.grading import answers_match, normalize
 from app.services.progress_service import topic_breakdown
 
 
@@ -50,7 +52,6 @@ def build_revision(db: Session, user_id: str, book_id: str | None = None) -> Rev
                 },
             })
             reasons.append(f"«{ex.topic}» mavzusi zaif")
-
 
     # 2) due / lapsed vocabulary
     due = list(db.scalars(
@@ -87,15 +88,47 @@ def build_revision(db: Session, user_id: str, book_id: str | None = None) -> Rev
     return session
 
 
-def complete_revision(db: Session, session: RevisionSession, results: list[dict]) -> RevisionSession:
-    total = len(results)
-    correct = sum(1 for r in results if r.get("correct"))
-    session.score = round(100.0 * correct / total, 1) if total else 0.0
+def grade_and_complete_revision(db: Session, session: RevisionSession, answers_by_index: dict[str, str]) -> RevisionSession:
+    """Server-side grading of student revision answers. Never trusts client boolean flags."""
+    graded_items = []
+    correct_count = 0
+
+    for idx_str, item in enumerate(session.items):
+        item_id = str(idx_str)
+        given_raw = answers_by_index.get(item_id, "").strip()
+        itype = item.get("item_type")
+        payload = item.get("payload", {})
+        is_correct = False
+
+        if itype == "vocab":
+            expected = payload.get("expected", "")
+            if expected:
+                is_correct = answers_match(given_raw, [expected])
+                if not is_correct and "," in expected:
+                    is_correct = any(answers_match(given_raw, [v.strip()]) for v in expected.split(",") if v.strip())
+        elif itype == "question":
+            accepted = payload.get("correct_answers", [])
+            qtype = payload.get("type", "")
+            if qtype == "multiple_choice":
+                # Compare letter or text
+                opts = payload.get("options", [])
+                correct_letters = [o.get("letter", "").upper() for o in opts if o.get("is_correct")]
+                if correct_letters:
+                    is_correct = given_raw.upper() in correct_letters
+                elif accepted:
+                    is_correct = answers_match(given_raw, accepted)
+            elif accepted:
+                is_correct = answers_match(given_raw, accepted)
+
+        if is_correct:
+            correct_count += 1
+
+        graded_items.append({**item, "result": is_correct, "given": given_raw})
+
+    total = len(session.items)
+    session.score = round(100.0 * correct_count / max(total, 1), 1)
     session.status = "completed"
     session.finished_at = _utcnow()
-    session.items = [
-        {**item, "result": bool(results[i].get("correct")) if i < len(results) else None}
-        for i, item in enumerate(session.items)
-    ]
+    session.items = graded_items
     db.commit()
     return session

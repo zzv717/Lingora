@@ -1,49 +1,68 @@
-"""SM-2 spaced repetition scheduler."""
-import math
+"""Spaced repetition scheduling (SM-2 adaptation with question-type awareness)."""
 from datetime import datetime, timedelta, timezone
 
 
-def schedule_sm2(*, ease_factor: float, interval_days: float, repetitions: int, lapses: int,
-                 quality: int) -> dict:
-    """Classic SM-2. quality: 0-5 (we map from answer correctness/type).
-    Returns updated state (no DB access — pure function, unit-testable)."""
-    ease = ease_factor
-    interval = interval_days
-    reps = repetitions
-    laps = lapses
-
-    if quality < 3:
-        reps = 0
-        interval = 0
-        laps += 1
-        ease = max(1.3, ease - 0.2)
-    else:
-        ease = ease + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-        ease = max(1.3, min(2.8, ease))
-        reps += 1
-        if reps == 1:
-            interval = 1
-        elif reps == 2:
-            interval = 6
-        else:
-            interval = math.ceil(interval * ease)
-
-    return {
-        "ease_factor": round(ease, 4),
-        "interval_days": float(interval),
-        "repetitions": reps,
-        "lapses": laps,
-        "due_at": datetime.now(timezone.utc) + timedelta(days=interval or 0),
-        "status": "learning" if reps < 2 else ("review" if interval < 21 else "mastered"),
-    }
-
-
-def quality_from_answer(*, correct: bool, question_type: str) -> int:
-    """Map an answer to SM-2 quality. Recall-based types count more than recognition."""
+def quality_from_answer(*, correct: bool, question_type: str = "written_en_uz", time_seconds: float = 0.0) -> int:
+    """SM-2 quality grade (0..5):
+    5: perfect response on active recall (written recall or spelling).
+    4: correct response on recognition (multiple choice / listening), or with hesitation.
+    3: correct with difficulty.
+    2: incorrect, but correct was easy to recall upon seeing answer.
+    1: incorrect, wrong recall.
+    0: total blackout.
+    """
     if not correct:
         return 1
-    if question_type in ("written_en_uz", "written_uz_en", "spelling", "sentence_blank"):
+
+    if question_type in ("written_uz_en", "written_en_uz", "spelling", "sentence_blank"):
         return 5
-    if question_type in ("listening",):
-        return 4
-    return 3  # multiple-choice recognition
+    elif question_type in ("choice_en_uz", "choice_uz_en", "listening"):
+        return 3
+    return 4
+
+
+def schedule_sm2(
+    *,
+    ease_factor: float,
+    interval_days: float,
+    repetitions: int,
+    lapses: int,
+    quality: int,  # 0..5
+    now: datetime | None = None,
+) -> dict:
+    """Pure SM-2 spaced repetition calculation.
+    Returns: {ease_factor, interval_days, repetitions, lapses, status, due_at}.
+    """
+    now = now or datetime.now(timezone.utc)
+    q = max(0, min(quality, 5))
+
+    # EF' = EF + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))
+    new_ef = ease_factor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))
+    new_ef = max(1.3, round(new_ef, 2))
+
+    if q < 3:
+        # lapse
+        new_reps = 0
+        new_interval = 0.0  # reset to review immediately
+        new_lapses = lapses + 1
+        status = "learning"
+    else:
+        new_reps = repetitions + 1
+        new_lapses = lapses
+        if new_reps == 1:
+            new_interval = 1.0
+        elif new_reps == 2:
+            new_interval = 6.0
+        else:
+            new_interval = round(interval_days * new_ef, 1)
+        status = "mastered" if new_interval >= 21.0 else "review"
+
+    due_at = now + timedelta(days=new_interval)
+    return {
+        "ease_factor": new_ef,
+        "interval_days": new_interval,
+        "repetitions": new_reps,
+        "lapses": new_lapses,
+        "status": status,
+        "due_at": due_at,
+    }
