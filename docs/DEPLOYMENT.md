@@ -104,6 +104,9 @@ Vercel Services ham frontend va FastAPI xizmatini bitta loyihada ishlata oladi.
 Repo ildizidagi `vercel.json` shu yo'nalish uchun dastlabki konfiguratsiya, lekin
 u hali ishlab chiqarish uchun tayyor emas: katta PDF uchun to'g'ridan-to'g'ri
 Storage yuklash, ishonchli background worker va Vercel muhitida sinov zarur.
+`TASK_BACKEND=sync` faqat qisqa tahlillarni so'rov ichida bajaradi; u serverless
+vaqt chegarasi yoki jarayon to'xtashidan himoyalangan navbat emas. Vercel Functions
+so'rov hajmi cheklovi tufayli katta PDF yuklash ham hali ishlamaydi.
 Mavjud frontend loyihasining root directory qiymati `frontend`; bu fayldan
 foydalanish uchun alohida preview sozlamasida repo ildizi kerak bo'ladi.
 
@@ -135,7 +138,7 @@ Deploydan keyin `https://<frontend-domain>/backend/api/v1/health` va
 | `AI_API_KEY` / `AI_MODEL` | AI uchun ✅ | — | kalit faqat serverda |
 | `AI_BASE_URL` | — | openai | Groq/OpenRouter/vLLM uchun o'zgartiring |
 | `AI_TIMEOUT_SECONDS` / `AI_MAX_RETRIES` | — | 60 / 2 | |
-| `TASK_BACKEND` | — | `inline` | `celery` + `REDIS_URL` |
+| `TASK_BACKEND` | — | `inline` | `celery` + `REDIS_URL`; `sync` faqat qisqa request-bound ishlar uchun |
 | `FREE_MAX_BOOKS` va boshqa plan limitlari | — | 3/25/100 | reja limitlari |
 | `SMTP_HOST/PORT/USER/PASSWORD/FROM` | — | — | parol tiklash emaili |
 | `BACKEND_URL` | frontend uchun | `http://127.0.0.1:8000` | FastAPI asosiy manzili (`/api/v1` siz); Docker Compose da `http://backend:8000` |

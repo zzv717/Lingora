@@ -52,7 +52,7 @@ lingora/
   baholash to'liq ishlaydi. AI talab qiladigan funksiyalar (tutor, ochiq javoblarni baholash,
   tarjimalar) ochiq 503 `AI_NOT_CONFIGURED` qaytaradi — hech qachon soxta javob berilmaydi.
 - **DB**: prod = PostgreSQL (Supabase), lokal = SQLite (`DATABASE_URL` orqali).
-- **Queue**: `TASK_BACKEND=inline` (Thread pool, har joyda ishlaydi) yoki `celery` (Redis bilan).
+- **Queue**: `TASK_BACKEND=inline` (Thread pool, doimiy server uchun), `celery` (Redis bilan), yoki `sync` (so'rov ichida, faqat qisqa ishlar uchun).
 
 ---
 

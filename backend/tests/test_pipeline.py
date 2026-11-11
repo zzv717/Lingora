@@ -145,3 +145,63 @@ def test_randomized_pdf_upload_and_download(client):
     original = client.get(f"{API}/books/{book_id}/file", headers=headers)
     assert original.status_code == 200
     assert original.content == content
+
+
+def test_sync_analysis_runs_before_upload_response(client, monkeypatch):
+    """Short serverless jobs must finish while the request is still active."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "task_backend", "sync")
+    headers = auth_headers(make_user(client, "sync-pdf@example.com")["access_token"])
+    response = upload(client, headers, make_sample_book(), title="Synchronous PDF")
+    assert response.status_code == 201, response.text
+    status = client.get(f"{API}/books/{response.json()['id']}/status", headers=headers)
+    assert status.json()["status"] == "completed", status.text
+
+
+def test_pdf_page_limit_returns_clear_error(client, monkeypatch):
+    import fitz
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "max_pages", 1)
+    doc = fitz.open()
+    doc.new_page()
+    doc.new_page()
+    content = doc.tobytes()
+    doc.close()
+    headers = auth_headers(make_user(client, "limit-pdf@example.com")["access_token"])
+    response = upload(client, headers, content)
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["code"] == "TOO_MANY_PAGES"
+
+
+def test_sync_analysis_exception_reports_failed_job(client, monkeypatch):
+    from app.core.config import settings
+    from app.services.pipeline import Pipeline
+
+    def fail(_self):
+        raise RuntimeError("worker crashed")
+
+    monkeypatch.setattr(settings, "task_backend", "sync")
+    monkeypatch.setattr(Pipeline, "run", fail)
+    headers = auth_headers(make_user(client, "sync-fail@example.com")["access_token"])
+    response = upload(client, headers, make_sample_book())
+    assert response.status_code == 201, response.text
+    status = client.get(f"{API}/books/{response.json()['id']}/status", headers=headers)
+    assert status.json()["status"] == "failed"
+    assert status.json()["error_code"] == "PIPELINE_ERROR"
+
+
+def test_serverless_cold_start_does_not_fail_other_jobs(monkeypatch):
+    import asyncio
+    import app.services.tasks as tasks
+    from app.main import app, lifespan
+
+    called = []
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setattr(tasks, "recover_stuck_jobs", lambda: called.append(True))
+
+    async def start():
+        async with lifespan(app):
+            pass
+
+    asyncio.run(start())
+    assert called == []

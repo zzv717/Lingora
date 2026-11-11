@@ -88,7 +88,8 @@ class Settings(BaseSettings):
     # --- Background processing ---
     # "inline" -> ThreadPoolExecutor inside the API process (default, works everywhere)
     # "celery" -> enqueue to Celery workers (requires REDIS_URL + celery worker running)
-    task_backend: Literal["inline", "celery"] = "inline"
+    # "sync" -> run inside the request (serverless-compatible for short jobs only)
+    task_backend: Literal["inline", "celery", "sync"] = "inline"
     redis_url: str = ""
     pipeline_max_pages: int = 300
 
