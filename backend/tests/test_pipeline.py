@@ -119,3 +119,29 @@ def test_delete_book_cascades(client, db):
 
     assert db.get(Book, book_id) is None
     assert db.query(VocabularyWord).filter(VocabularyWord.book_id == book_id).count() == 0
+
+
+def test_randomized_pdf_upload_and_download(client):
+    """Exercise a fresh PDF variant end-to-end, including the private original."""
+    import secrets
+    import fitz
+
+    marker = secrets.token_hex(8)
+    doc = fitz.open(stream=make_sample_book(), filetype="pdf")
+    page = doc.new_page()
+    page.insert_text((50, 72), f"Random reading sample {marker}. Reading is useful.")
+    content = doc.tobytes()
+    doc.close()
+
+    headers = auth_headers(make_user(client, f"pdf-{marker}@example.com")["access_token"])
+    response = upload(client, headers, content, title="Random PDF")
+    assert response.status_code == 201, response.text
+    book_id = response.json()["id"]
+    job = wait_for_book(client, headers, book_id)
+    assert job["status"] == "completed", job
+    structure = client.get(f"{API}/books/{book_id}/structure", headers=headers)
+    assert structure.status_code == 200
+    assert structure.json()["coverage"]["exercises"] >= 3
+    original = client.get(f"{API}/books/{book_id}/file", headers=headers)
+    assert original.status_code == 200
+    assert original.content == content

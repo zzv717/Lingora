@@ -98,8 +98,16 @@ fayl va background joblar uchun mosligi alohida baholanishi kerak.
 
 ### Vercel frontend
 
-Vercel faqat Next.js frontendni ishga tushiradi; FastAPI backendni alohida
-serverda ishga tushirish va unga doimiy PostgreSQL bazasini ulash kerak. Vercel
+Hozirgi Vercel sozlamasi faqat Next.js frontendni ishga tushiradi; FastAPI
+backendni alohida ishga tushirish va unga doimiy PostgreSQL bazasini ulash kerak.
+Vercel Services ham frontend va FastAPI xizmatini bitta loyihada ishlata oladi.
+Repo ildizidagi `vercel.json` shu yo'nalish uchun dastlabki konfiguratsiya, lekin
+u hali ishlab chiqarish uchun tayyor emas: katta PDF uchun to'g'ridan-to'g'ri
+Storage yuklash, ishonchli background worker va Vercel muhitida sinov zarur.
+Mavjud frontend loyihasining root directory qiymati `frontend`; bu fayldan
+foydalanish uchun alohida preview sozlamasida repo ildizi kerak bo'ladi.
+
+Alohida backend serveridan foydalanilganda Vercel
 sozlamalarida `BACKEND_URL` qiymatini FastAPI serverining HTTPS asosiy manziliga
 (masalan, `https://api.example.uz`, `/api/v1` qo'shmasdan) o'rnating va frontendni
 qayta deploy qiling. `localhost` yoki `127.0.0.1` Vercel'dan alohida backendga

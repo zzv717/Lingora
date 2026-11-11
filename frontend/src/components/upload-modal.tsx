@@ -2,7 +2,7 @@
 /** Book upload modal: PDF validation, copyright consent, progress + status polling. */
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiErr, getAccessToken } from "@/lib/api";
+import { api, getAccessToken } from "@/lib/api";
 import { Button, ErrorBox, Input, Modal, Progress, useToast } from "@/components/ui";
 import type { Book, Job } from "@/lib/types";
 
@@ -41,15 +41,12 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
   const poll = async (bookId: string): Promise<Job> => {
     for (let i = 0; i < 240; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      try {
-        const job = await api<Job>(`/books/${bookId}/status`);
-        setProgress(job.progress);
-        setStage(job.stage_label_uz);
-        if (job.status === "completed") return job;
-        if (job.status === "failed") throw new Error(job.error_message || "Tahlil bajarilmadi");
-      } catch (e) {
-        if (e instanceof ApiErr) throw e;
-      }
+      const job = await api<Job | null>(`/books/${bookId}/status`);
+      if (!job) throw new Error("Tahlil holati topilmadi.");
+      setProgress(job.progress);
+      setStage(job.stage_label_uz);
+      if (job.status === "completed") return job;
+      if (job.status === "failed") throw new Error(job.error_message || "Tahlil bajarilmadi");
     }
     throw new Error("Tahlil juda uzoq davom etmoqda. Keyinroq 'Kitoblarim' bo'limidan tekshiring.");
   };
