@@ -14,7 +14,8 @@
     "next": "14.2.32",
     "pdfjs-dist": "3.11.174",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "tus-js-client": "^4.3.1"
   },
   "devDependencies": {
     "@types/node": "20.14.0",

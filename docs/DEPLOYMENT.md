@@ -109,12 +109,24 @@ fayl va background joblar uchun mosligi alohida baholanishi kerak.
 Hozirgi Vercel sozlamasi faqat Next.js frontendni ishga tushiradi; FastAPI
 backendni alohida ishga tushirish va unga doimiy PostgreSQL bazasini ulash kerak.
 Vercel Services ham frontend va FastAPI xizmatini bitta loyihada ishlata oladi.
-Repo ildizidagi `vercel.json` shu yo'nalish uchun dastlabki konfiguratsiya, lekin
-u hali ishlab chiqarish uchun tayyor emas: katta PDF uchun to'g'ridan-to'g'ri
-Storage yuklash, ishonchli background worker va Vercel muhitida sinov zarur.
+Repo ildizidagi `vercel.json` Vercel Services uchun. Supabase private bucket
+bilan frontend imzolangan TUS orqali PDF'ni bevosita Storage'ga yuklaydi;
+Vercel Function 4.5 MB request chegarasi faylga qo'llanmaydi. Backend uchun
+`SUPABASE_PUBLISHABLE_KEY` ga faqat publishable/anon kalit qo'ying — service
+kalit hech qachon browserga yuborilmaydi. `SUPABASE_DIRECT_UPLOAD_ENABLED=true`
+qilishdan oldin private bucket hajm chegarasini aniq 52428800 bayt (50 MiB)
+qiling; Storage global chegarasi ham kamida shuncha bo'lsin. Backend har
+bir token berishdan oldin private bucket va limitni tekshiradi;
+Free rejada bitta fayl maksimumi 50 MB. Backend haqiqiy hajm va PDF ni tekshiradi.
+Yuklash to'xtasa rezerv kitob joy egallaydi, muddati 2 soat; muddati o'tgandan
+keyin keyingi yuklashda tozalanadi. Imzolangan ruxsatni bekor qilib bo'lmagani
+uchun yangi yuklangan kitob/hisobni o'chirishdan oldin 2 soat kutish kerak.
+
+Muhim: ushbu usul ishlashini haqiqiy Supabase/Vercel Preview'da sinash zarur.
 `TASK_BACKEND=sync` faqat qisqa tahlillarni so'rov ichida bajaradi; u serverless
-vaqt chegarasi yoki jarayon to'xtashidan himoyalangan navbat emas. Vercel Functions
-so'rov hajmi cheklovi tufayli katta PDF yuklash ham hali ishlamaydi.
+vaqt chegarasi yoki jarayon to'xtashidan himoyalangan navbat emas. Katta PDF'ni
+ishonchli tahlil qilish uchun alohida durable worker va recovery zarur. 300 sahifa
+chegarasi alohida amal qiladi.
 Mavjud frontend loyihasining root directory qiymati `frontend`; bu fayldan
 foydalanish uchun alohida preview sozlamasida repo ildizi kerak bo'ladi.
 
@@ -140,7 +152,9 @@ Deploydan keyin `https://<frontend-domain>/backend/api/v1/health` va
 | `CORS_ORIGINS` | ✅ prod | localhost:3000 | vergul bilan |
 | `STORAGE_BACKEND` | — | `local` | `local` yoki `supabase` |
 | `STORAGE_DIR` | — | `./data/storage` | local backend uchun |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` / `SUPABASE_STORAGE_BUCKET` | supabase storage uchun | — | |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` / `SUPABASE_STORAGE_BUCKET` | supabase storage uchun | — | service key faqat serverda |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase browser upload uchun | — | public/anon key; service key emas |
+| `SUPABASE_DIRECT_UPLOAD_ENABLED` | direct upload uchun | false | bucket 50 MiB limiti tekshirilgach yoqing |
 | `UPLOAD_MAX_MB` / `MAX_PAGES` | — | 50 / 300 | yuklash limitlari |
 | `AI_PROVIDER` | — | `none` | `openai_compatible` / `anthropic` / `gemini` |
 | `AI_API_KEY` / `AI_MODEL` | AI uchun ✅ | — | kalit faqat serverda |
@@ -152,8 +166,9 @@ Deploydan keyin `https://<frontend-domain>/backend/api/v1/health` va
 | `BACKEND_URL` | frontend uchun | `http://127.0.0.1:8000` | FastAPI asosiy manzili (`/api/v1` siz); Docker Compose da `http://backend:8000` |
 | `FRONTEND_URL` | — | localhost:3000 | reset linklari uchun |
 
-**Muhim:** hech qanday kalit frontendga yoki gitga yozilmaydi. `frontend` faqat
-`BACKEND_URL` bilan proxy qiladi — brauzer to'g'ridan-to'g'ri AI provayderlariga ulanmaydi.
+**Muhim:** service va AI secret kalitlari frontendga yoki gitga yozilmaydi.
+Browserga faqat Supabase public key va vaqtinchalik imzolangan upload token beriladi;
+brauzer to'g'ridan-to'g'ri AI provayderlariga ulanmaydi.
 
 ---
 

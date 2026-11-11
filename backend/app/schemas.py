@@ -80,6 +80,14 @@ class ForgotPasswordOut(BaseModel):
 
 # ---------- Books / pipeline ----------
 
+class DirectUploadIn(BaseModel):
+    filename: str = Field(min_length=1, max_length=500)
+    title: str = Field(default="", max_length=500)
+    size_bytes: int = Field(gt=0)
+    consent: bool
+
+
+
 class BookOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str

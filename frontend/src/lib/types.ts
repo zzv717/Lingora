@@ -26,7 +26,7 @@ export interface Book {
   id: string;
   title: string;
   original_filename: string;
-  status: "uploaded" | "processing" | "ready" | "failed";
+  status: "uploading" | "uploaded" | "processing" | "ready" | "failed";
   page_count: number;
   file_size_bytes: number;
   description: string;

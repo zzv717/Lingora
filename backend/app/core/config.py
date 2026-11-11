@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     storage_dir: str = "./data/storage"
     supabase_url: str = ""
     supabase_service_key: str = ""
+    # Public/anon key, safe to send to browsers. Never use a service key here.
+    supabase_publishable_key: str = ""
+    supabase_direct_upload_enabled: bool = False
     supabase_storage_bucket: str = "lingora-books"
 
     # --- Upload limits ---
