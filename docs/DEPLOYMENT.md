@@ -32,6 +32,7 @@ docker compose exec backend alembic upgrade head   # birinchi marta
 # 5. Tekshirish
 curl http://localhost:8000/api/v1/health
 curl http://localhost:3000
+curl http://localhost:3000/backend/api/v1/health  # frontend proxy orqali API
 ```
 
 ### HTTPS (Caddy misol)
@@ -64,8 +65,49 @@ lingora.example.uz {
 - **Backend service**: root=`backend`, build=`pip install -r requirements.txt`,
   start=`uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - **Frontend service**: root=`frontend`, build=`npm run build`, start=`npm start`,
-  env: `BACKEND_URL=https://<backend-domain>`
+  env: `BACKEND_URL=https://<backend-domain>` (FastAPI serverining asosiy manzili;
+  `/api/v1` qo'shmang). Bu qiymat frontend ishga tushganda o'qiladi.
 - Har ikkisiga `.env` qiymatlarini Variables bo'limida kiritng.
+
+### Render backend + Vercel frontend
+
+Repo ildizidagi `render.yaml` Render Blueprint uchun FastAPI xizmatini tayyorlaydi.
+Render'da GitHub reposini ulang va Blueprint yaratishda kerakli branchni tanlang.
+So'raladigan qiymatlar:
+
+- `DATABASE_URL`: Lingora uchun alohida PostgreSQL bazasining ulanish manzili.
+  Supabase'dan foydalansangiz, **Lingora uchun alohida loyiha** yoki boshqa ilova
+  ma'lumotlari bilan aralashmaydigan baza tayyorlang. Parolni faqat Render'ning
+  Environment sozlamasiga kiriting, chat yoki Git'ga emas.
+- `FRONTEND_URL` va `CORS_ORIGINS`: frontendning HTTPS manzili, masalan
+  `https://lingora-mocha.vercel.app`.
+- `SECRET_KEY`: Blueprint tasodifiy qiymat yaratadi. Uni o'zgartirish mavjud
+  sessiyalarni bekor qilishi mumkin.
+
+Backend build tugagach, uning `https://...onrender.com/api/v1/health` manzilini
+tekshiring va Vercel'da `BACKEND_URL` ga faqat `https://...onrender.com` ni
+kiriting. Frontendning yangi kodini ham deploy qilish zarur. Bepul Render
+xizmati uxlab qolishi va dastlabki so'rov sekinlashishi mumkin; xizmat va baza
+rejasi shartlari Render/Supabase tomonidan o'zgartirilishi mumkin.
+
+**Fayllar:** Render'ning vaqtinchalik local diski qayta deploy yoki qayta ishga
+tushganda saqlanmaydi. Kitoblarni doimiy saqlash uchun private Supabase Storage
+bucket va backendda `STORAGE_BACKEND`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
+`SUPABASE_STORAGE_BUCKET` sozlamalarini ulang. Free service ishlab chiqarishdagi
+fayl va background joblar uchun mosligi alohida baholanishi kerak.
+
+### Vercel frontend
+
+Vercel faqat Next.js frontendni ishga tushiradi; FastAPI backendni alohida
+serverda ishga tushirish va unga doimiy PostgreSQL bazasini ulash kerak. Vercel
+sozlamalarida `BACKEND_URL` qiymatini FastAPI serverining HTTPS asosiy manziliga
+(masalan, `https://api.example.uz`, `/api/v1` qo'shmasdan) o'rnating va frontendni
+qayta deploy qiling. `localhost` yoki `127.0.0.1` Vercel'dan alohida backendga
+ishora qilmaydi. Supabase loyihasining URL manzili FastAPI backend URL o'rnini
+bosmaydi.
+
+Deploydan keyin `https://<frontend-domain>/backend/api/v1/health` va
+`https://<backend-domain>/api/v1/health` JSON javob qaytarishini tekshiring.
 
 ---
 
@@ -88,6 +130,7 @@ lingora.example.uz {
 | `TASK_BACKEND` | — | `inline` | `celery` + `REDIS_URL` |
 | `FREE_MAX_BOOKS` va boshqa plan limitlari | — | 3/25/100 | reja limitlari |
 | `SMTP_HOST/PORT/USER/PASSWORD/FROM` | — | — | parol tiklash emaili |
+| `BACKEND_URL` | frontend uchun | `http://127.0.0.1:8000` | FastAPI asosiy manzili (`/api/v1` siz); Docker Compose da `http://backend:8000` |
 | `FRONTEND_URL` | — | localhost:3000 | reset linklari uchun |
 
 **Muhim:** hech qanday kalit frontendga yoki gitga yozilmaydi. `frontend` faqat

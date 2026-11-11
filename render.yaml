@@ -1,0 +1,24 @@
+# Render Blueprint for the FastAPI service. Database and storage are external.
+services:
+  - type: web
+    name: lingora-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: ENV
+        value: prod
+      - key: SECRET_KEY
+        generateValue: true
+      # Enter these privately in Render; never commit connection strings or keys.
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
