@@ -136,9 +136,10 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
         });
       }
       setPhase("processing");
-      setStage("AI kitobni tahlil qilmoqda...");
-      await poll(book.id);
-      toast("Kitob tayyor! 🎉", "success");
+      setStage("Kitob tahlil qilinmoqda...");
+      const job = await poll(book.id);
+      const aiWarning = job.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED");
+      toast(aiWarning?.message_uz || "Kitob tayyor! 🎉", aiWarning ? "error" : "success");
       reset();
       onClose();
       router.push(`/books/${book.id}`);
@@ -183,8 +184,8 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
               className="mt-0.5 h-4 w-4 rounded border-amber-300" />
             <span>
               Tasdiqlayman: ushbu kitobni qayta ishlash va shaxsiy o'quv maqsadida foydalanish
-              huquqiga egaman. Fayl <b>faqat men ko'radigan</b> shaxsiy kutubxonamda saqlanadi va
-              uchinchi shaxslarga tarqatilmaydi.
+              huquqiga egaman. Fayl shaxsiy kutubxonamda saqlanadi. AI yoqilgan bo'lsa, tahlil uchun
+              kitobdan ayrim matn parchalari AI provayderiga yuborilishi mumkin.
             </span>
           </label>
           <ErrorBox message={error} />

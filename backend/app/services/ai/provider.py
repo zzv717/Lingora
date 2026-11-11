@@ -169,10 +169,7 @@ class GeminiProvider(AIProvider):
 
     def complete(self, messages, model=None, max_tokens=3000, temperature=0.2, json_mode=False):
         mdl = model or settings.ai_model
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent"
-            f"?key={settings.ai_api_key}"
-        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent"
         system_parts = [m.content for m in messages if m.role == "system"]
         contents: list[dict] = []
         for m in messages:
@@ -194,7 +191,7 @@ class GeminiProvider(AIProvider):
         for attempt in range(settings.ai_max_retries + 1):
             try:
                 with httpx.Client(timeout=settings.ai_timeout_seconds) as client:
-                    resp = client.post(url, json=payload)
+                    resp = client.post(url, json=payload, headers={"x-goog-api-key": settings.ai_api_key})
                 if resp.status_code in (429, 500, 502, 503, 504):
                     raise ApiError("AI_PROVIDER_BUSY", f"AI provayder vaqtincha band ({resp.status_code}).", 503)
                 resp.raise_for_status()
@@ -211,10 +208,10 @@ class GeminiProvider(AIProvider):
                 )
             except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as e:
                 last_err = e
-                log.warning("Gemini attempt %s failed: %s", attempt + 1, e)
+                log.warning("Gemini attempt %s failed: %s", attempt + 1, type(e).__name__)
                 if attempt < settings.ai_max_retries:
                     time.sleep(1.5 * (attempt + 1))
-        raise ApiError("AI_PROVIDER_ERROR", f"Gemini bilan aloqa amalga oshmadi: {last_err}", 502)
+        raise ApiError("AI_PROVIDER_ERROR", "Gemini bilan aloqa amalga oshmadi. Keyinroq qayta urinib ko'ring.", 502)
 
 
 def get_provider() -> AIProvider:

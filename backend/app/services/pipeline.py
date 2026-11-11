@@ -211,9 +211,12 @@ class Pipeline:
         self.progress(80, "ai_enrich")
         if settings.ai_configured:
             try:
-                ai_enrich.enrich_book(self.db, book.id)
+                deduped_warn.extend(ai_enrich.enrich_book(self.db, book.id))
             except Exception as e:
-                log.warning("AI enrichment failed (continuing gracefully): %s", e)
+                self.db.rollback()
+                log.warning("AI enrichment failed (continuing gracefully): %s", type(e).__name__)
+                deduped_warn.append({"page": 0, "code": "AI_ENRICHMENT_FAILED",
+                                     "message_uz": "AI qo'shimcha tahlili bajarilmadi; asosiy tahlil saqlandi."})
 
         self.progress(95, "validating")
         self.job.warnings = deduped_warn

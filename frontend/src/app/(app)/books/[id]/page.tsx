@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { get } from "@/lib/api";
-import type { Structure, VocabWord } from "@/lib/types";
+import type { Structure, VocabWord, Job } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
 
@@ -23,11 +23,16 @@ export default function BookDetailPage() {
   const router = useRouter();
   const [struct, setStruct] = useState<Structure | null>(null);
   const [error, setError] = useState("");
+  const [aiWarning, setAiWarning] = useState("");
 
   useEffect(() => {
     (async () => {
       try {
         setStruct(await get<Structure>(`/books/${id}/structure`));
+        try {
+          const job = await get<Job | null>(`/books/${id}/status`);
+          setAiWarning(job?.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED")?.message_uz || "");
+        } catch { /* Structure remains usable if status is unavailable. */ }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Yuklanmadi");
       }
@@ -63,6 +68,7 @@ export default function BookDetailPage() {
     <>
       <TopBar title={struct.book.title} />
       <main className="mx-auto max-w-5xl px-4 py-6 lg:px-8">
+        {aiWarning && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{aiWarning}</p>}
         {/* header card */}
         <Card className="mb-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
