@@ -111,7 +111,6 @@ def ocr_page(page: fitz.Page, dpi: int = 200) -> str:
     """Rasterize + OCR one page. Returns '' if OCR is unavailable (callers report honestly)."""
     if not ocr_available():
         return ""
-    import numpy as np  # pytesseract needs PIL images only; numpy optional
     import pytesseract
     from PIL import Image
 

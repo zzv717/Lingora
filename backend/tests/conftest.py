@@ -6,6 +6,7 @@ import pathlib
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
 TEST_DB = BACKEND_DIR / "data" / "test_lingora.db"
 TEST_STORAGE = BACKEND_DIR / "data" / "test_storage"
+TEST_DB.parent.mkdir(parents=True, exist_ok=True)
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
 os.environ["STORAGE_DIR"] = str(TEST_STORAGE)

@@ -96,7 +96,10 @@ def test_full_pipeline_detection(client):
     assert go["needs_translation"] is False
 
 
-def test_scanned_page_reports_ocr_honestly(client):
+def test_scanned_page_reports_ocr_honestly(client, monkeypatch):
+    # Make this unavailable-OCR test independent of the host's Tesseract install.
+    import app.services.pdf_extractor as extractor
+    monkeypatch.setattr(extractor, "ocr_available", lambda: False)
     tokens = make_user(client, "scan@example.com")
     h = auth_headers(tokens["access_token"])
     r = upload(client, h, make_scanned_like_book())
