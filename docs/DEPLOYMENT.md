@@ -53,9 +53,17 @@ lingora.example.uz {
 1. [supabase.com](https://supabase.com) → New project
 2. **Database**: Project Settings → Database → Connection string (Pooler) →
    `DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres`
-3. **Sxema** (2 yo'l):
-   - **A (tavsiya)**: backend `alembic upgrade head` ishga tushiring
-   - **B (Supabase-native, RLS bilan)**: `database/supabase_schema.sql` ni SQL Editor'da ishga tushiring
+3. **Sxema**: FastAPI backend uchun `alembic upgrade head` ishlating.
+   `database/supabase_schema.sql` alohida Supabase-native sxema bo'lib, FastAPI
+   Alembic sxemasi bilan o'zaro almashtirilmaydi; ikkalasini bir bazada qo'llamang.
+   Supabase `public` sxemasi Data API orqali ko'rinishi mumkin: barcha yangi
+   FastAPI jadvallarida RLS yoqing va `anon`, `authenticated` hamda `PUBLIC`
+   rollaridan bevosita jadval ruxsatlarini olib tashlang. FastAPI ma'lumotlarga
+   o'zining server tomondagi PostgreSQL roli orqali murojaat qiladi, foydalanuvchi
+   huquqlarini esa o'zi tekshiradi; Supabase Auth RLS siyosatlariga tayanmaydi.
+   Har bir keyingi migratsiyada yangi jadvallarni ham xuddi shunday himoyalang.
+   Tanlangan Lingora loyihasining boshlang'ich Alembic jadvallariga bu cheklovlar
+   alohida Supabase migratsiyasi bilan qo'llangan.
 4. **Storage** (ixtiyoriy): New bucket → `lingora-books` → **Private** →
    `.env`: `STORAGE_BACKEND=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
    (service key: Settings → API → service_role — **faqat server**, hech qachon frontendga bermang!)
