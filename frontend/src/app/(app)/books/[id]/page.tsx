@@ -59,6 +59,7 @@ export default function BookDetailPage() {
   }
 
   const cov = struct.coverage;
+  const hasProgress = Object.values(struct.lessons_progress).some((p) => !!p.last_visited_at);
   const grouped = struct.chapters.map((ch) => ({
     chapter: ch,
     lessons: struct.lessons.filter((l) => l.chapter_id === ch.id),
@@ -90,7 +91,7 @@ export default function BookDetailPage() {
             </div>
             <div className="flex gap-2">
               <Button onClick={() => router.push(`/reader/${id}`)} size="lg">
-                O'qishni boshlash →
+                {hasProgress ? "Davom ettirish →" : "O'qishni boshlash →"}
               </Button>
             </div>
           </div>
@@ -151,10 +152,8 @@ function LessonRow({ lesson, progress, bookId }: {
       locked ? "border-slate-200 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-800/40"
              : "border-slate-200 hover:border-brand-300 dark:border-slate-700 dark:hover:border-brand-700"}`}>
       <div className="min-w-0">
-        <Link href={`/reader/${bookId}?lesson=${lesson.id}`}
-          className={`font-medium ${locked ? "text-slate-400" : "text-slate-700 hover:text-brand-600 dark:text-slate-200"}`}>
-          {lesson.title}
-        </Link>
+        {locked ? <span className="font-medium text-slate-400">{lesson.title}</span> :
+          <Link href={`/reader/${bookId}?lesson=${lesson.id}`} className="font-medium text-slate-700 hover:text-brand-600 dark:text-slate-200">{lesson.title}</Link>}
         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-400">
           <span>{lesson.page_start}-{lesson.page_end} bet</span>
           {lesson.topic && <span>· {lesson.topic}</span>}
@@ -173,7 +172,7 @@ function LessonRow({ lesson, progress, bookId }: {
         )}
         {!locked && (
           <Link href={`/reader/${bookId}?lesson=${lesson.id}`}>
-            <Button size="sm" variant="secondary">Ochish</Button>
+            <Button size="sm" variant="secondary">{progress?.last_visited_at ? "Davom ettirish" : "Boshlash"}</Button>
           </Link>
         )}
       </div>

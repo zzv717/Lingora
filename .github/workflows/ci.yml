@@ -58,5 +58,5 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: 1
 
-      - name: Test production API proxy
-        run: cd frontend && npm run test:proxy
+      - name: Test production API proxy and reader
+        run: cd frontend && npm run test:proxy && npm run test:reader

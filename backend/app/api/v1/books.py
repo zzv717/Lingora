@@ -267,6 +267,7 @@ def _lesson_locks(db: Session, book: Book, profile: Profile | None) -> tuple[dic
             "exercises_checked": p.exercises_checked if p else 0,
             "time_spent_seconds": p.time_spent_seconds if p else 0,
             "last_page": p.last_page if p else 0,
+            "last_visited_at": p.last_visited_at.isoformat() if p and p.last_visited_at else None,
             "vocab_gate_passed": gate_ok,
             "has_vocabulary": has_vocab,
             "locked": locked,

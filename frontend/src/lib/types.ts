@@ -73,6 +73,7 @@ export interface LessonProgress {
   exercises_checked: number;
   time_spent_seconds: number;
   last_page: number;
+  last_visited_at: string | null;
   vocab_gate_passed: boolean;
   has_vocabulary: boolean;
   locked: boolean;

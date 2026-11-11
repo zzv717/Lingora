@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { get, post } from "@/lib/api";
+import { chooseLesson } from "@/lib/reader-utils";
 import type { Exercise, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
 import { Button, Card, Spinner, useToast } from "@/components/ui";
 import { PdfViewer, type BlankOverlay } from "@/components/reader/pdf-viewer";
@@ -24,7 +25,11 @@ function ReaderInner() {
   const [lessonId, setLessonId] = useState<string>("");
   const [exercises, setExercises] = useState<Exercise[] | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
-  const [page, setPage] = useState(1);
+  const [position, setPosition] = useState({ lessonId: "", page: 1 });
+  const page = position.page;
+  const setPage = useCallback((page: number) => setPosition((old) => ({ ...old, page })), []);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const savedPositions = useRef<Record<string, number>>({});
   const [startingGate, setStartingGate] = useState(false);
   const [fbValues, setFbValues] = useState<FbValues>({});
   const [overlayStates, setOverlayStates] = useState<Record<string, "correct" | "wrong">>({});
@@ -35,41 +40,51 @@ function ReaderInner() {
       const s = await get<Structure>(`/books/${bookId}/structure`);
       setStruct(s);
       const requested = search.get("lesson");
-      const firstOpen = s.lessons.find((l) => !s.lessons_progress[l.id]?.locked) || s.lessons[0];
-      setLessonId(requested && s.lessons.some((l) => l.id === requested) ? requested : firstOpen?.id || "");
+      setLessonId(chooseLesson(s.lessons, s.lessons_progress, requested)?.id || "");
     })().catch(() => toast("Kitob yuklanmadi", "error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId]);
 
   useEffect(() => {
     if (!lessonId || !struct) return;
+    let cancelled = false;
     setExercises(null);
     setFbValues({});
     setOverlayStates({});
     (async () => {
       const exs = await get<Exercise[]>(`/lessons/${lessonId}/exercises`);
+      if (cancelled) return;
       setExercises(exs);
       const l = struct.lessons.find((x) => x.id === lessonId) || null;
       setLesson(l);
       const lp = struct.lessons_progress[lessonId];
-      setPage(l ? (lp?.last_page && lp.last_page >= l.page_start ? lp.last_page : l.page_start) : 1);
-    })().catch(() => toast("Mashqlar yuklanmadi", "error"));
+      const lastPage = savedPositions.current[lessonId] || lp?.last_page || 0;
+      const savedPage = lastPage > 0 && lastPage <= struct.book.page_count ? lastPage : 0;
+      setPosition({ lessonId, page: savedPage || l?.page_start || 1 });
+    })().catch(() => { if (!cancelled) toast("Mashqlar yuklanmadi", "error"); });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lessonId]);
 
-  // study-time heartbeat (60s) — feeds streaks & daily activity
+  // Serialize position saves to prevent an older request overwriting a newer page.
   useEffect(() => {
+    if (!lessonId || position.lessonId !== lessonId) return;
+    savedPositions.current[lessonId] = page;
+    saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+      await post("/progress/heartbeat", { seconds: 0, lesson_id: lessonId, page });
+    }).catch(() => { toast("O'qish joyi saqlanmadi. Internetni tekshiring.", "error"); });
+  }, [lessonId, position.lessonId, page, toast]);
+
+  // Account for study time separately; page position is persisted as it changes.
+  useEffect(() => {
+    if (!lessonId || position.lessonId !== lessonId) return;
     heartbeatRef.current = setInterval(() => {
-      fetch("/backend/api/v1/progress/heartbeat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ seconds: 60, lesson_id: lessonId || undefined, page }),
+      saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+        await post("/progress/heartbeat", { seconds: 60, lesson_id: lessonId });
       }).catch(() => {});
     }, 60_000);
-    return () => {
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-    };
-  }, [lessonId, page]);
+    return () => { if (heartbeatRef.current) clearInterval(heartbeatRef.current); };
+  }, [lessonId, position.lessonId]);
 
   const onFbChange = useCallback((qid: string, blankId: string, value: string) => {
     setFbValues((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), [blankId]: value } }));
@@ -151,6 +166,11 @@ function ReaderInner() {
               🔑 Lug'at testi
             </Button>
           )}
+          {exercises && <button type="button" onClick={() => {
+            const section = Array.from(document.querySelectorAll<HTMLElement>("[data-exercises]"))
+              .find((el) => el.offsetParent !== null);
+            section?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }} className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-700">Mashqlar ({exercises.length}) ↓</button>}
           <Link href={`/tutor?book=${bookId}&lesson=${lessonId}`}>
             <Button size="sm" variant="secondary">🤖 Murabbiy</Button>
           </Link>
@@ -166,7 +186,7 @@ function ReaderInner() {
             overlays={overlays}
           />
           {/* exercises below the PDF on medium screens */}
-          <div className="thin-scroll space-y-4 2xl:hidden">
+          <div data-exercises className="thin-scroll space-y-4 2xl:hidden">
             {exercises === null ? (
               <div className="flex justify-center py-8"><Spinner className="h-6 w-6 text-brand-500" /></div>
             ) : (
@@ -199,7 +219,7 @@ function ReaderInner() {
         </div>
 
         {/* wide-screen exercise sidebar */}
-        <aside className="thin-scroll hidden w-[440px] shrink-0 space-y-4 overflow-y-auto border-l border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950 2xl:block">
+        <aside data-exercises className="thin-scroll hidden w-[440px] shrink-0 space-y-4 overflow-y-auto border-l border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950 2xl:block">
           {exercises === null ? (
             <div className="flex justify-center py-8"><Spinner className="h-6 w-6 text-brand-500" /></div>
           ) : (
