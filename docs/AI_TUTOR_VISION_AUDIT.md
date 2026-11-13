@@ -49,8 +49,9 @@
 PyMuPDF locally rendered selected pages through the same vision rendering helper:
 PDF pages 2 and 4, 7–9, and 16–17, respectively 2, 3 and 2 images at
 1385×1800 pixels. No page images were sent to a provider during this test.
-Visually PDF page 2 names Grammarway 3, Jenny Dooley and Virginia Evans; PDF
-page 4 shows a contents page listing 16 units and 4 revisions. The first unit
+Separate inspection of PDF pages 1–5 showed that PDF page 3 names Grammarway 3,
+Jenny Dooley and Virginia Evans; PDF page 5 shows a contents page listing 16
+units and 4 revisions. The first unit
 begins on printed page 6 and the next on printed page 18; a page label is not
 a proven PDF index. The existing local OCR/detector results and actual visual
 exercise counts are recorded in `SCANNED_TEXTBOOK_STATUS.md`.
