@@ -12,7 +12,11 @@ type OCRLine = { text: string; bbox: [number, number, number, number]; confidenc
 type Preview = { page_number: number; text: string; already_processed: boolean;
   lesson: { title: string } | null; warnings: { code: string; message_uz: string }[];
   exercises: { title: string; type: string; instructions: string; geometry: unknown;
-    questions: { number: string; prompt: string }[] }[] };
+    questions: { number: string; prompt: string }[] }[];
+  layout_review: { candidates: { number: string; instruction: string; bbox: number[];
+    lines: { text: string; confidence: number | null }[];
+    numbered_item_candidates: { number: string; text: string; continuation_lines: string[] }[];
+    image_candidates: { bbox: number[] }[] }[]; warnings: string[] } };
 
 export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: string; pageCount: number; pending: number; onUpdate: () => void }) {
   const [running, setRunning] = useState(false);
@@ -93,7 +97,7 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
               `/books/${bookId}/ocr/pages/${number}`, { lines });
             if (!saved.already_processed) { processed++; exerciseCount += saved.exercises_added; wordCount += saved.words_added; }
           } catch (e) {
-            if (e instanceof ApiErr && e.code === "MIXED_PAGE_REVIEW_REQUIRED") {
+            if (e instanceof ApiErr && ["MIXED_PAGE_REVIEW_REQUIRED", "OCR_NO_EXERCISE_REVIEW"].includes(e.code)) {
               skipped++; skippedPages.push(number); continue;
             }
             throw e;
@@ -103,7 +107,7 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
       if (mounted.current) {
         setStatus(previewOnly
           ? (stopped.current ? "Sinov to'xtatildi. Hech narsa saqlanmadi." : skipped ? `${skippedPages.join(", ")}-sahifa o'qilmadi yoki ishonchliligi past. Hech narsa saqlanmadi.` : "Sinov tugadi. Hech narsa saqlanmadi; natijani PDF bilan solishtiring.")
-          : `${stopped.current ? "To'xtatildi" : "Yakunlandi"}: ${processed} sahifa saqlandi; ${skipped} sahifa o'qilmadi${skippedPages.length ? ` (${skippedPages.join(", ")})` : ""}. ${exerciseCount} mashq va ${wordCount} lug'at nomzodi topildi. O'qilmagan sahifalar navbatda qoladi. OCR natijalari tekshirilishi kerak.`);
+            : `${stopped.current ? "To'xtatildi" : "Yakunlandi"}: ${processed} sahifa saqlandi; ${skipped} sahifa OCR yoki mashq aniqlashda tekshiruvga qoldi${skippedPages.length ? ` (${skippedPages.join(", ")})` : ""}. ${exerciseCount} mashq va ${wordCount} lug'at nomzodi topildi. Tekshirilmagan sahifalar navbatda qoladi. OCR natijalari tekshirilishi kerak.`);
         if (!previewOnly) onUpdate();
       }
     } catch (e) {
@@ -128,6 +132,21 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
         <p>{ex.title} · {ex.type} · {ex.questions.length} savol · {ex.geometry ? "koordinata bor" : "koordinata yo'q"}</p>
         <p>{ex.instructions}</p><ul className="ml-4 list-disc">{ex.questions.map((q, j) => <li key={j}>{q.number}. {q.prompt}</li>)}</ul>
       </div>)}
+      <details className="mt-2"><summary>Geometrik ko'rib chiqish: {preview.layout_review.candidates.length} ta tekshirilmagan hudud</summary>
+        <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Hudud va savol chegaralari taxminiy: nazariy matn aralashishi yoki mashq keyingi sahifada davom etishi mumkin. Asl sahifa bilan solishtiring. Bu natija saqlanmaydi.</p>
+        {preview.layout_review.candidates.map((candidate, i) => <div key={i} className="mt-2 border-t border-slate-200 pt-2 text-xs dark:border-slate-700">
+          <p>Raqam: {candidate.number} · OCR chiziqlari: {candidate.lines.length} · raqamlangan satr nomzodlari: {candidate.numbered_item_candidates.length}</p>
+          <p>{candidate.instruction}</p><p>PDF hududi: {candidate.bbox.map((n) => n.toFixed(1)).join(", ")} · ustma-ust rasm hududlari: {candidate.image_candidates.length}</p>
+          <details><summary>Hudud matni</summary><ul>{candidate.lines.map((line, j) => <li key={j}>{line.text}</li>)}</ul></details>
+          {candidate.numbered_item_candidates.length > 0 && <details className="mt-2"><summary>Vaqtinchalik interaktiv ko'rinishni sinash</summary>
+            <p className="my-1 text-amber-700 dark:text-amber-300">Bu faqat ko'rinish sinovi: javoblar saqlanmaydi va tekshirilmaydi. Savol matni va chegaralari OCR taxmini.</p>
+            {candidate.numbered_item_candidates.map((item, j) => <div key={j} className="my-2 rounded border border-slate-200 p-2 dark:border-slate-700">
+              <p>{item.text}</p>{item.continuation_lines.map((text, k) => <p key={k}>{text}</p>)}
+              <label className="mt-1 block">{item.number}-savol javobi <textarea rows={2} className="mt-1 block w-full rounded border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-800" /></label>
+            </div>)}
+          </details>}
+        </div>)}
+      </details>
       <details className="mt-2"><summary>OCR matni</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{preview.text}</pre></details>
       {!!preview.warnings.length && <details className="mt-2"><summary>Ogohlantirishlar</summary><ul>{preview.warnings.map((w, i) => <li key={i}>{w.message_uz}</li>)}</ul></details>}
     </div>}

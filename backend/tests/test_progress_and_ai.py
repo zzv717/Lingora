@@ -178,3 +178,26 @@ def test_reader_position_is_saved_and_returned_without_adding_study_time(client)
     # Time heartbeats must not erase the saved location.
     client.post(f"{API}/progress/heartbeat", headers=h, json={"seconds": 60, "lesson_id": lesson_id})
     assert client.get(f"{API}/books/{book_id}/structure", headers=h).json()["lessons_progress"][lesson_id]["last_page"] == 2
+
+
+def test_generated_answer_is_not_scored_as_a_verified_key(client, db, monkeypatch):
+    from sqlalchemy import select
+    from app.models import ExerciseQuestion
+
+    monkeypatch.setattr(settings, 'ai_provider', 'none')
+    h, book_id = _setup(client, 'ai_guess@example.com')
+    struct = client.get(f'{API}/books/{book_id}/structure', headers=h).json()
+    exs = client.get(f'{API}/lessons/{struct["lessons"][0]["id"]}/exercises', headers=h).json()
+    ex = next(e for e in exs if e['exercise_type'] == 'fill_blank')
+    questions = [db.scalar(select(ExerciseQuestion).where(ExerciseQuestion.id == q['id'])) for q in ex['questions']]
+    for q in questions:
+        q.correct_answers = ['guessed']
+        q.answer_source = 'ai'
+    db.commit()
+    answers = [{'question_id': q['id'], 'content': {'blanks': {'b1': 'guessed'}}} for q in ex['questions']]
+    assert client.put(f'{API}/exercises/{ex["id"]}/answers', headers=h, json={'answers': answers}).status_code == 200
+    res = client.post(f'{API}/exercises/{ex["id"]}/check', headers=h)
+    assert res.status_code == 200
+    data = res.json()
+    assert data['uncertain'] and data['max_score'] == 0
+    assert all(v['correct'] is None and v['source'] == 'unverified' and not v['expected'] for v in data['verdicts'])

@@ -177,3 +177,33 @@ def test_page_type_is_inferred_without_schema_change(client, db):
     assert client.get(f'{API}/books/{book}/pages/1', headers=h).json()['page_type'] == 'mixed'
     page.ocr_used = True; db.commit()
     assert client.get(f'{API}/books/{book}/pages/1', headers=h).json()['page_type'] == 'unknown'
+
+
+def test_no_detected_exercise_does_not_consume_page_or_write_content(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    payload = lines('State verbs describe conditions and feelings.', 'These verbs can describe emotions.')
+    url = f'{API}/books/{book}/ocr/pages/1'
+    preview = client.post(url + '/preview', headers=h, json=payload)
+    assert preview.status_code == 200
+    assert preview.json()['layout_review']['candidates'] == []
+    r = client.post(url, headers=h, json=payload)
+    assert r.status_code == 409 and r.json()['error']['code'] == 'OCR_NO_EXERCISE_REVIEW'
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.needs_ocr and not page.ocr_used and not page.text
+    assert not db.scalar(select(Exercise).where(Exercise.book_id == book))
+
+
+def test_visual_review_candidate_is_read_only_and_does_not_split_numbered_items(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    payload = lines('9 Complete the text using the verbs.',
+                    *[f'{n}. They ...... (go)' for n in range(1, 11)])
+    res = client.post(f'{API}/books/{book}/ocr/pages/1/preview', headers=h, json=payload)
+    assert res.status_code == 200, res.text
+    candidates = res.json()['layout_review']['candidates']
+    assert len(candidates) == 1 and candidates[0]['number'] == '9'
+    assert len(candidates[0]['numbered_item_candidates']) == 10
+    assert candidates[0]['needs_review']
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.needs_ocr and not page.text and not db.scalar(select(Exercise.id).where(Exercise.book_id == book))

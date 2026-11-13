@@ -213,6 +213,11 @@ def check_exercise(
         answer = saved.get(q.id, {})
         has_key = bool(q.correct_answers) and q.answer_source in ("key", "manual")
         det_correct, given_repr = grading_engine.grade_question_deterministic(q, answer)
+        # Only an explicitly verified key/manual answer is authoritative. Never
+        # score generated, inferred or unknown answers as deterministic truth.
+        # Ask AI for an evaluation or leave the response ungraded instead.
+        if q.answer_source not in ("key", "manual"):
+            det_correct = None
         if det_correct is not None:
             expected = _expected_repr(q)
             verdicts[q.id] = {
@@ -220,14 +225,6 @@ def check_exercise(
                 "explanation_uz": q.explanation_uz or _default_explanation(ex, det_correct),
                 "source": "key" if has_key else "deterministic", "given": given_repr,
                 "grammar_note_uz": _grammar_note(ex),
-            }
-        elif q.correct_answers and q.answer_source == "ai":
-            given_text = _flatten_answer(answer)
-            ok = grading_engine.answers_match(given_text, q.correct_answers)
-            verdicts[q.id] = {
-                "correct": ok, "confidence": 0.9, "expected": ", ".join(q.correct_answers),
-                "explanation_uz": q.explanation_uz or _default_explanation(ex, ok),
-                "source": "ai", "given": given_repr, "grammar_note_uz": _grammar_note(ex),
             }
         else:
             pending_for_ai.append(q)
@@ -246,7 +243,7 @@ def check_exercise(
                     continue
                 verdicts[q.id] = {
                     "correct": v["correct"], "confidence": v["confidence"],
-                    "expected": v.get("expected") or _expected_repr(q),
+                    "expected": v.get("expected") or (_expected_repr(q) if q.answer_source in ("key", "manual") else ""),
                     "explanation_uz": v.get("explanation_uz") or _default_explanation(ex, v["correct"]),
                     "source": "ai", "given": _flatten_answer(saved.get(q.id, {})),
                     "grammar_note_uz": v.get("grammar_note_uz", ""),
@@ -260,10 +257,12 @@ def check_exercise(
         if q.id not in verdicts:
             uncertain = True
             verdicts[q.id] = {
-                "correct": None, "confidence": 0.0, "expected": _expected_repr(q),
+                "correct": None, "confidence": 0.0,
+                "expected": _expected_repr(q) if q.answer_source in ("key", "manual") else "",
                 "explanation_uz": (
-                    "Bu javobni avtomatik baholash uchun AI kerak, lekin AI sozlanmagan. "
-                    "Javobingiz saqlandi — murabbiy bilan tekshiring yoki AI sozlangach qayta tekshiring."
+                    ("AI baholash hozir ishlamadi. " if settings.ai_configured else
+                     "Bu javobni avtomatik baholash uchun AI kerak, lekin AI sozlanmagan. ") +
+                    "Javobingiz saqlandi — murabbiy bilan tekshiring yoki keyin qayta urinib ko'ring."
                 ),
                 "source": "unverified", "given": _flatten_answer(saved.get(q.id, {})),
                 "grammar_note_uz": "",

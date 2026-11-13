@@ -419,11 +419,14 @@ def preview_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request
     if not page:
         raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
     lines, text, structure = _prepare_ocr(page, data)
+    from app.services.layout_review import visual_candidates
+    layout_review = visual_candidates(lines, page.width, page.height, page.images)
     lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
                       Lesson.page_start <= page_number, Lesson.page_end >= page_number)
                       .order_by(Lesson.order_index).limit(1))
     return {"page_number": page_number, "already_processed": not page.needs_ocr,
             "text": text, "lines": lines, "lesson": {"id": lesson.id, "title": lesson.title} if lesson else None,
+            "layout_review": layout_review,
             "exercises": [{"title": ex.title, "instructions": ex.instructions, "type": ex.exercise_type,
                 "geometry": _ocr_geometry(page, ex.bbox, lines), "needs_review": True,
                 "questions": [{"number": q.number, "prompt": q.prompt} for q in ex.questions]}
@@ -449,6 +452,10 @@ def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: R
     if page.text.strip():
         raise ApiError("MIXED_PAGE_REVIEW_REQUIRED", "Sahifada avvalgi matn mavjud; uni almashtirmaslik uchun faqat OCR sinovidan foydalaning.", 409)
     lines, text, structure = _prepare_ocr(page, data)
+    if not any(ex.questions for ex in structure.exercises):
+        # Do not mark a page complete merely because OCR produced text: it may
+        # contain an unrecognized exercise. Preview remains available and read-only.
+        raise ApiError("OCR_NO_EXERCISE_REVIEW", "Mashq ajratilmadi; sahifa saqlanmadi va tekshiruv uchun navbatda qoladi.", 409)
     lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
                      Lesson.page_start <= page_number, Lesson.page_end >= page_number)
                      .order_by(Lesson.order_index).limit(1))
