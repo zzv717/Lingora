@@ -30,8 +30,11 @@ LESSON_RE = re.compile(
     re.IGNORECASE,
 )
 INSTRUCTION_RE = re.compile(
-    r"^(?:complete|fill\s+in|choose|match|read\s+and\s+answer|write\s+about|rewrite|"
-    r"put\s+the\s+words|translate|true\s+or\s+false|answer\s+the\s+questions)\b", re.IGNORECASE)
+    r"^(?:complete|fill\s+in|choose|match|read\s+(?:and\s+answer|the\s+(?:text|passage|story))|"
+    r"write\s+about|rewrite|put\s+the\s+(?:words|verbs|sentences)|translate|"
+    r"true\s+or\s+false|answer\s+the\s+questions|correct\s+the\s+(?:mistakes|errors|sentences)|"
+    r"use\s+the\s+word\s+given|form\s+(?:a|the)\s+word|word\s+formation)\b", re.IGNORECASE)
+NUMBERED_INSTRUCTION_RE = re.compile(r"^(\d{1,3})\s*[.):]?\s+(.+)$")
 KEY_HEADER_RE = re.compile(r"^(answer\s*keys?|keys?|answers?|javoblar)\b[\s:—–-]*$", re.IGNORECASE)
 VOCAB_PAIR_RE = re.compile(r"^([A-Za-z][A-Za-z'’\-\. ]{1,48}?)\s*(?:[—–·•]| - |\t|=|\s{3,}|\|)\s*(.{1,120})$")
 DASH_PAIR_RE = re.compile(r"^(.{1,60}?)\s*(?:[—–·•]| - )\s*(.{1,120})$")
@@ -135,6 +138,15 @@ def _classify_exercise(instruction: str, items: list[dict[str, Any]]) -> str:
         return "true_false"
     if TRANSLATE_HINT.search(instruction):
         return "translation"
+    # Specific instructions are candidates, not evidence of a verified key.
+    if re.search(r"\b(?:rewrite|rephrase|transform)\b", instruction, re.I):
+        return "sentence_transformation"
+    if re.search(r"\b(?:word formation|form (?:a |the )?(?:correct )?word|use the word given)\b", instruction, re.I):
+        return "word_formation"
+    if re.search(r"\b(?:correct|find)\s+the\s+(?:mistakes|errors|sentences)\b", instruction, re.I):
+        return "error_correction"
+    if re.search(r"\banswer\s+the\s+questions\b", instruction, re.I) and not READ_HINT.search(instruction):
+        return "short_answer"
     if WRITE_HINT.search(instruction) and not has_blanks and len(items) <= 2:
         return "writing"
     if ORDER_HINT.search(instruction):
@@ -151,8 +163,9 @@ def _classify_exercise(instruction: str, items: list[dict[str, Any]]) -> str:
 def _parse_exercise_block(header: dict[str, Any], body_lines: list[dict[str, Any]],
                           page_number: int, structure: DetectedStructure) -> DetectedExercise:
     m = EXERCISE_RE.match(header["text"])
-    num = (m.group(2) or "").strip() if m else ""
-    instr = (m.group(3) or "").strip() if m else header["text"].strip()
+    numbered = NUMBERED_INSTRUCTION_RE.match(header["text"].strip()) if not m else None
+    num = (m.group(2) or "").strip() if m else (numbered.group(1) if numbered else "")
+    instr = (m.group(3) or "").strip() if m else (numbered.group(2).strip() if numbered else header["text"].strip())
     ref = f"Exercise {num}" if num else f"Exercise (p.{page_number},{header.get('seq', '?')})"
 
     questions: list[DetectedQuestion] = []
@@ -430,12 +443,23 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
         # Exercise labels inside an answer-key section are references, not exercises.
         key_index = next((i for i, ln in enumerate(page["lines"]) if KEY_HEADER_RE.match(ln["text"].strip())), len(page["lines"]))
         content_lines = page["lines"][:key_index]
-        hdr_idx = [i for i, ln in enumerate(content_lines) if EXERCISE_RE.match(ln["text"].strip())]
-        if not hdr_idx:
-            # Conservative fallback: an instruction followed nearby by numbered items.
-            # Do not infer headingless exercises from arbitrary numbered prose alone.
-            hdr_idx = [i for i, ln in enumerate(content_lines) if INSTRUCTION_RE.match(ln["text"].strip())
-                       and any(NUM_ITEM_RE.match(nxt["text"].strip()) for nxt in content_lines[i+1:i+5])]
+        hdr_idx = []
+        for i, ln in enumerate(content_lines):
+            text = ln["text"].strip()
+            if EXERCISE_RE.match(text):
+                hdr_idx.append(i)
+                continue
+            numbered = NUMBERED_INSTRUCTION_RE.match(text)
+            instruction = numbered.group(2) if numbered else text
+            # Only propose an instruction header when numbered questions follow nearby.
+            # A headingless or OCR-derived candidate always requires review.
+            if INSTRUCTION_RE.match(instruction) and any(
+                    NUM_ITEM_RE.match(nxt["text"].strip()) for nxt in content_lines[i+1:i+5]):
+                if (hdr_idx and EXERCISE_RE.match(content_lines[hdr_idx[-1]]["text"].strip())
+                        and not any(NUM_ITEM_RE.match(prev["text"].strip())
+                                    for prev in content_lines[hdr_idx[-1]+1:i])):
+                    continue  # instruction belonging to the immediately preceding labelled exercise
+                hdr_idx.append(i)
         for j, i in enumerate(hdr_idx):
             header = {**content_lines[i], "seq": i + 1}
             end = hdr_idx[j + 1] if j + 1 < len(hdr_idx) else len(content_lines)

@@ -154,6 +154,7 @@ class PageOut(BaseModel):
     text: str
     blocks: list[Any]
     images: list[Any]
+    page_type: str = "unknown"
     needs_ocr: bool
     ocr_used: bool
     has_warning: bool
@@ -378,9 +379,17 @@ class OkOut(BaseModel):
     message_uz: str = ""
 
 
+class OCRWordIn(BaseModel):
+    text: str = Field(min_length=1, max_length=200)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+    confidence: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
 class OCRLineIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     bbox: list[float] = Field(min_length=4, max_length=4)
+    confidence: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    words: list[OCRWordIn] = Field(default_factory=list, max_length=200)
 
 
 class OCRPageIn(BaseModel):

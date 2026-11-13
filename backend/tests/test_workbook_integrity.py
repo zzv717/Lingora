@@ -197,3 +197,61 @@ def test_direct_pipeline_call_cannot_replace_existing_content(client, db):
     assert job.status == 'failed' and job.error_code == 'REANALYZE_UNSAFE'
     assert book.status == 'ready'
     assert list(db.scalars(select(ExerciseQuestion.id).join(Exercise).where(Exercise.book_id == book_id))) == old_ids
+
+
+def test_numbered_instructions_and_labelled_exercises_can_coexist():
+    doc = fitz.open(); page = doc.new_page()
+    for y, text in [(50, 'Exercise 1'), (70, 'Complete the sentences.'), (90, '1. She _____ home.'),
+                    (120, '2 Put the verbs in brackets into the correct form.'),
+                    (140, '1. We _____ here.'), (160, '2. They _____ home.')]:
+        page.insert_text((50, y), text)
+    pages, _ = extract_document(doc)
+    result = detect_structure(pages)
+    assert len(result.exercises) == 2
+    assert [len(ex.questions) for ex in result.exercises] == [1, 2]
+    assert result.exercises[1].ref == 'Exercise 2'
+    assert result.exercises[1].needs_review
+    doc.close()
+
+
+def test_page_classification_is_per_page_and_does_not_replace_mixed_text(monkeypatch):
+    import io
+    from PIL import Image
+    import app.services.pdf_extractor as extractor
+    image = io.BytesIO(); Image.new('RGB', (80, 80), 'white').save(image, format='PNG')
+    doc = fitz.open()
+    text_page = doc.new_page(width=400, height=400)
+    text_page.insert_text((20, 30), 'Native text on a text based page.')
+    scan = doc.new_page(width=400, height=400)
+    scan.insert_image(fitz.Rect(10, 10, 390, 390), stream=image.getvalue())
+    mixed = doc.new_page(width=400, height=400)
+    mixed.insert_image(fitz.Rect(10, 50, 390, 390), stream=image.getvalue())
+    mixed.insert_text((20, 30), 'Native heading')
+    doc.new_page(width=400, height=400)
+    calls = []
+    def mock_ocr(page):
+        calls.append(page.number)
+        return [{'text': 'Readable OCR content in a scanned page', 'bbox': [10, 10, 300, 30],
+                 'confidence': 90, 'size': 10, 'bold': False, 'x0': 10}]
+    monkeypatch.setattr(extractor, 'ocr_page_lines', mock_ocr)
+    pages, warnings = extractor.extract_document(doc)
+    assert [p['page_type'] for p in pages] == ['text', 'scanned', 'mixed', 'blank']
+    assert calls == [1, 3]  # mixed native content was never overwritten
+    assert pages[1]['ocr_used'] and not pages[1]['needs_ocr']
+    assert pages[2]['text'] == 'Native heading' and pages[2]['needs_ocr']
+    assert any(w['page'] == 3 and w['code'] == 'MIXED_PAGE_REVIEW_REQUIRED' for w in warnings)
+    doc.close()
+
+
+@pytest.mark.parametrize(('instruction', 'expected'), [
+    ('Rewrite the sentences.', 'sentence_transformation'),
+    ('Use the word given to complete the sentences.', 'word_formation'),
+    ('Correct the mistakes.', 'error_correction'),
+    ('Answer the questions.', 'short_answer'),
+    ('Read the text and answer the questions.', 'reading_comprehension'),
+    ('Put the words in the correct order.', 'sentence_construction'),
+])
+def test_explicit_instruction_types_are_review_candidates(instruction, expected):
+    from app.services.structure_detector import _classify_exercise
+    items = [{'options': [], 'blanks': [], 'prompt': 'An observed question'}]
+    assert _classify_exercise(instruction, items) == expected

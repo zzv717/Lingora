@@ -90,3 +90,90 @@ def test_ocr_questions_without_detected_underscores_still_have_input(client, db)
     result = client.post(f"{API}/exercises/{ex['id']}/check", headers=h)
     assert result.status_code == 200, result.text
     assert result.json()['max_score'] == 0 and result.json()['verdicts'][0]['correct'] is None
+
+
+def test_browser_ocr_persists_word_confidence_and_review_geometry(client, db):
+    h, book, lesson, _ = setup_scan(client, db)
+    payload = lines('Exercise 1. Put the verbs into the correct form.',
+                    '1. She ______ to school every day. (go)')
+    for line in payload['lines']:
+        line['confidence'] = 87
+        line['words'] = [{'text': 'She', 'bbox': [40, line['bbox'][1], 70, line['bbox'][3]], 'confidence': 92}]
+    r = client.post(f'{API}/books/{book}/ocr/pages/1', headers=h, json=payload)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.blocks[0]['words'][0]['confidence'] == 92
+    assert page.blocks[0]['confidence'] == 87
+    ex = db.scalar(select(Exercise).where(Exercise.book_id == book))
+    assert ex.lesson_id == lesson and ex.needs_review
+    assert ex.bbox['page_index'] == 0 and ex.bbox['ocr_confidence'] == 87
+    assert ex.bbox['coordinate_space'] == 'unrotated_crop_points'
+    assert ex.bbox['normalized_bbox'] == [30/600, 20/800, 500/600, 55/800]
+
+
+def test_invalid_word_box_does_not_consume_page(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    payload = lines('Exercise 1. Complete the sentence here.')
+    payload['lines'][0]['words'] = [{'text': 'word', 'bbox': [0, 0, 900, 10], 'confidence': 90}]
+    r = client.post(f'{API}/books/{book}/ocr/pages/1', headers=h, json=payload)
+    assert r.status_code == 422
+    assert client.get(f'{API}/books/{book}/ocr/pending', headers=h).json()['pages'] == [1, 2]
+
+
+def test_preview_is_read_only_for_pending_and_already_processed_page(client, db):
+    h, book, lesson, _ = setup_scan(client, db)
+    other = auth_headers(make_user(client, 'ocr-preview-other@example.com')['access_token'])
+    payload = lines('Exercise 1. Put the verbs into the correct form.', '1. She ______ home. (go)')
+    url = f'{API}/books/{book}/ocr/pages/1/preview'
+    assert client.post(url, json=payload, headers=other).status_code == 404
+    preview = client.post(url, json=payload, headers=h)
+    assert preview.status_code == 200, preview.text
+    result = preview.json()
+    assert result['lesson']['id'] == lesson
+    assert result['exercises'][0]['needs_review'] is True
+    assert result['exercises'][0]['geometry']['page_index'] == 0
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.needs_ocr and not page.ocr_used and not page.text
+    assert not db.scalar(select(Exercise).where(Exercise.book_id == book))
+    assert client.post(f'{API}/books/{book}/ocr/pages/1', json=payload, headers=h).status_code == 200
+    db.expire_all()
+    ex = db.scalar(select(Exercise).where(Exercise.book_id == book))
+    q = db.scalar(select(ExerciseQuestion).where(ExerciseQuestion.exercise_id == ex.id))
+    assert client.put(f'{API}/exercises/{ex.id}/answers', headers=h,
+        json={'answers': [{'question_id': q.id, 'content': {'blanks': {'b1': 'goes'}}}]}).status_code == 200
+    previous = page.text
+    again = client.post(url, json=lines('Exercise 9. Complete the sentences.', '1. Different ______ here.'), headers=h)
+    assert again.status_code == 200 and again.json()['already_processed']
+    db.expire_all()
+    assert db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1)).text == previous
+    assert db.scalar(select(StudentAnswer).where(StudentAnswer.question_id == q.id)).content['blanks']['b1'] == 'goes'
+    assert len(list(db.scalars(select(Exercise).where(Exercise.book_id == book)))) == 1
+
+
+def test_mixed_page_import_never_replaces_existing_text(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    page.text = 'Original'; page.blocks = [{'text': 'Original'}]
+    db.commit()
+    data = lines('Exercise 1. Complete the sentences.', '1. She ______ home.')
+    preview = client.post(f'{API}/books/{book}/ocr/pages/1/preview', headers=h, json=data)
+    assert preview.status_code == 200
+    response = client.post(f'{API}/books/{book}/ocr/pages/1', headers=h, json=data)
+    assert response.status_code == 409 and response.json()['error']['code'] == 'MIXED_PAGE_REVIEW_REQUIRED'
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.text == 'Original' and page.blocks == [{'text': 'Original'}] and page.needs_ocr
+
+
+def test_page_type_is_inferred_without_schema_change(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    page.images = [{'bbox': [0, 0, 500, 700]}]
+    db.commit()
+    assert client.get(f'{API}/books/{book}/pages/1', headers=h).json()['page_type'] == 'scanned'
+    page.text = 'Existing text'; db.commit()
+    assert client.get(f'{API}/books/{book}/pages/1', headers=h).json()['page_type'] == 'mixed'
+    page.ocr_used = True; db.commit()
+    assert client.get(f'{API}/books/{book}/pages/1', headers=h).json()['page_type'] == 'unknown'

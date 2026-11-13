@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getAccessToken } from "@/lib/api";
 import { Button, Spinner } from "@/components/ui";
 import { fitScale, overlayRect, type PageGeometry } from "@/lib/reader-utils";
+import { withTimeout } from "@/lib/timeout";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask, RenderTask } from "pdfjs-dist";
 
 export interface BlankOverlay {
@@ -44,19 +45,20 @@ export function PdfViewer({ bookId, pageNumber, onPageCount, onGoTo, overlays = 
     setError(""); setRendering(true); setPdfDoc(null); setGeometry(null);
     (async () => {
       try {
-        const pdfjs = await import("pdfjs-dist");
+        const pdfjs = await withTimeout(import("pdfjs-dist"), 60_000, "PDF dasturi yuklanmadi. Internetni tekshirib qayta urinib ko'ring.");
         if (cancelled) return;
         pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
         task = pdfjs.getDocument({ url: `/backend/api/v1/books/${bookId}/file`,
           httpHeaders: { authorization: `Bearer ${getAccessToken()}` } });
-        const doc = await task.promise;
+        const doc = await withTimeout(task.promise, 120_000, "PDF yuklanishi 2 daqiqadan oshdi. Internet yoki faylga kirishni tekshirib qayta urinib ko'ring.");
         if (cancelled) return;
         setPdfDoc(doc); setNumPages(doc.numPages); onPageCount?.(doc.numPages);
       } catch (e) {
+        if (task) void task.destroy().catch(() => {});
         if (!cancelled) { setError(e instanceof Error ? e.message : "PDF yuklanmadi"); setRendering(false); }
       }
     })();
-    return () => { cancelled = true; if (task) void task.destroy(); };
+    return () => { cancelled = true; if (task) void task.destroy().catch(() => {}); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId, reloadKey]);
 
@@ -73,13 +75,23 @@ export function PdfViewer({ bookId, pageNumber, onPageCount, onGoTo, overlays = 
   }, []);
 
   useEffect(() => {
+    if (!pdfDoc || (size.width && size.height)) return;
+    const timer = setTimeout(() => {
+      setError("PDF ko'rish maydoni tayyor bo'lmadi. Qayta urinib ko'ring.");
+      setRendering(false);
+    }, 15_000);
+    return () => clearTimeout(timer);
+  }, [pdfDoc, size.width, size.height]);
+
+  useEffect(() => {
     if (!pdfDoc || !size.width || !size.height) return;
     let cancelled = false;
     let task: RenderTask | null = null;
     setRendering(true); setError(""); setGeometry(null);
     (async () => {
       try {
-        const page = await pdfDoc.getPage(Math.min(Math.max(pageNumber, 1), pdfDoc.numPages));
+        const page = await withTimeout(pdfDoc.getPage(Math.min(Math.max(pageNumber, 1), pdfDoc.numPages)),
+          60_000, "PDF sahifasini olish uzoq davom etdi. Qayta urinib ko'ring.");
         if (cancelled) return;
         const angle = ((page.rotate + rotation) % 360 + 360) % 360;
         const base = page.getViewport({ scale: 1, rotation: angle });
@@ -92,7 +104,7 @@ export function PdfViewer({ bookId, pageNumber, onPageCount, onGoTo, overlays = 
         const ctx = buffer.getContext("2d");
         if (!ctx) throw new Error("PDF sahifasini ko'rsatib bo'lmadi");
         task = page.render({ canvasContext: ctx, viewport, transform: [dpr, 0, 0, dpr, 0, 0] });
-        await task.promise;
+        await withTimeout(task.promise, 60_000, "PDF sahifasini chizish uzoq davom etdi. Qayta urinib ko'ring.");
         if (cancelled || !canvasRef.current) return;
         const canvas = canvasRef.current;
         canvas.width = buffer.width; canvas.height = buffer.height;
@@ -103,6 +115,7 @@ export function PdfViewer({ bookId, pageNumber, onPageCount, onGoTo, overlays = 
         setGeometry({ scale, width: unrotated.width, height: unrotated.height, rotation: angle });
         setRendering(false);
       } catch (e) {
+        task?.cancel();
         if (!cancelled) { setError(e instanceof Error ? e.message : "PDF sahifasi yuklanmadi"); setRendering(false); }
       }
     })();

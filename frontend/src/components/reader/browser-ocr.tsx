@@ -1,28 +1,41 @@
 "use client";
 /** Local, opt-in OCR. Only recognized text is sent to Lingora; images stay in the browser. */
 import { useEffect, useRef, useState } from "react";
-import { get, getAccessToken, post } from "@/lib/api";
+import { ApiErr, get, getAccessToken, post } from "@/lib/api";
 import { Button } from "@/components/ui";
 import type { PDFDocumentLoadingTask } from "pdfjs-dist";
 import type { Worker } from "tesseract.js";
+import { ocrBoxToPdf } from "@/lib/ocr-geometry";
 
-type OCRLine = { text: string; bbox: [number, number, number, number] };
+type OCRWord = { text: string; bbox: [number, number, number, number]; confidence: number };
+type OCRLine = { text: string; bbox: [number, number, number, number]; confidence: number; words: OCRWord[] };
+type Preview = { page_number: number; text: string; already_processed: boolean;
+  lesson: { title: string } | null; warnings: { code: string; message_uz: string }[];
+  exercises: { title: string; type: string; instructions: string; geometry: unknown;
+    questions: { number: string; prompt: string }[] }[] };
 
-export function BrowserOCR({ bookId, pending, onUpdate }: { bookId: string; pending: number; onUpdate: () => void }) {
+export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: string; pageCount: number; pending: number; onUpdate: () => void }) {
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [pageInput, setPageInput] = useState("1");
+  const [preview, setPreview] = useState<Preview | null>(null);
   const stopped = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { stopped.current = true; mounted.current = false; }; }, []);
 
-  const start = async () => {
-    stopped.current = false; setRunning(true); setError("");
+  const start = async (previewOnly: boolean) => {
+    const selected = Number(pageInput);
+    if (previewOnly && (!Number.isInteger(selected) || selected < 1 || selected > pageCount)) {
+      setError(`Sahifa raqami 1–${pageCount} oralig'ida bo'lishi kerak.`); return;
+    }
+    stopped.current = false; setRunning(true); setError(""); setPreview(null);
     let worker: Worker | undefined;
     let loading: PDFDocumentLoadingTask | undefined;
     let processed = 0, skipped = 0, exerciseCount = 0, wordCount = 0;
+    const skippedPages: number[] = [];
     try {
-      const { pages } = await get<{ pages: number[] }>(`/books/${bookId}/ocr/pending`);
+      const pages = previewOnly ? [selected] : (await get<{ pages: number[] }>(`/books/${bookId}/ocr/pending`)).pages;
       if (!pages.length) { setStatus("OCR talab qiladigan sahifa qolmadi."); return; }
       setStatus("Bepul OCR dasturi yuklanmoqda (birinchi marta bir necha MB)...");
       const [pdfjs, tesseract] = await Promise.all([import("pdfjs-dist"), import("tesseract.js")]);
@@ -53,20 +66,45 @@ export function BrowserOCR({ bookId, pending, onUpdate }: { bookId: string; pend
         page.cleanup();
         if (stopped.current) break;
         const lines: OCRLine[] = [];
+        let exceedsLimit = false;
         for (const block of result.data.blocks || []) for (const par of block.paragraphs) for (const line of par.lines) {
-          const text = line.text.trim().slice(0, 1000);
+          const text = line.text.trim();
           if (!text) continue;
-          const b = line.bbox;
-          lines.push({ text, bbox: [b.x0 / scale, b.y0 / scale, b.x1 / scale, b.y1 / scale] });
+          const detectedWords = line.words.filter((word) => word.text.trim() && Number.isFinite(word.confidence));
+          if (text.length > 1000 || detectedWords.length > 200 || detectedWords.some((word) => word.text.trim().length > 200)) {
+            exceedsLimit = true; break;
+          }
+          const words = detectedWords.map((word) => ({ text: word.text.trim(),
+            bbox: ocrBoxToPdf(word.bbox, viewport, page.view),
+            confidence: Math.max(0, Math.min(100, word.confidence)) }));
+          lines.push({ text, bbox: ocrBoxToPdf(line.bbox, viewport, page.view),
+            confidence: Math.max(0, Math.min(100, line.confidence)), words });
         }
-        if (lines.map((l) => l.text).join(" ").length < 24) { skipped++; continue; }
-        const saved = await post<{ already_processed: boolean; exercises_added: number; words_added: number }>(
-          `/books/${bookId}/ocr/pages/${number}`, { lines: lines.slice(0, 500) });
-        if (!saved.already_processed) { processed++; exerciseCount += saved.exercises_added; wordCount += saved.words_added; }
+        const confidence = lines.reduce((sum, line) => sum + line.confidence, 0) / Math.max(lines.length, 1);
+        if (exceedsLimit || lines.length > 500 || lines.map((l) => l.text).join(" ").length < 24 || confidence < 40) {
+          skipped++; skippedPages.push(number); continue;
+        }
+        if (previewOnly) {
+          const result = await post<Preview>(`/books/${bookId}/ocr/pages/${number}/preview`, { lines });
+          if (mounted.current) setPreview(result);
+        } else {
+          try {
+            const saved = await post<{ already_processed: boolean; exercises_added: number; words_added: number }>(
+              `/books/${bookId}/ocr/pages/${number}`, { lines });
+            if (!saved.already_processed) { processed++; exerciseCount += saved.exercises_added; wordCount += saved.words_added; }
+          } catch (e) {
+            if (e instanceof ApiErr && e.code === "MIXED_PAGE_REVIEW_REQUIRED") {
+              skipped++; skippedPages.push(number); continue;
+            }
+            throw e;
+          }
+        }
       }
       if (mounted.current) {
-        setStatus(`${stopped.current ? "To'xtatildi" : "Yakunlandi"}: ${processed} sahifa saqlandi; ${skipped} sahifa o'qilmadi. ${exerciseCount} mashq va ${wordCount} lug'at nomzodi topildi. OCR natijalari tekshirilishi kerak.`);
-        onUpdate();
+        setStatus(previewOnly
+          ? (stopped.current ? "Sinov to'xtatildi. Hech narsa saqlanmadi." : skipped ? `${skippedPages.join(", ")}-sahifa o'qilmadi yoki ishonchliligi past. Hech narsa saqlanmadi.` : "Sinov tugadi. Hech narsa saqlanmadi; natijani PDF bilan solishtiring.")
+          : `${stopped.current ? "To'xtatildi" : "Yakunlandi"}: ${processed} sahifa saqlandi; ${skipped} sahifa o'qilmadi${skippedPages.length ? ` (${skippedPages.join(", ")})` : ""}. ${exerciseCount} mashq va ${wordCount} lug'at nomzodi topildi. O'qilmagan sahifalar navbatda qoladi. OCR natijalari tekshirilishi kerak.`);
+        if (!previewOnly) onUpdate();
       }
     } catch (e) {
       if (mounted.current) { setError(e instanceof Error ? e.message : "OCR bajarilmadi."); onUpdate(); }
@@ -77,14 +115,25 @@ export function BrowserOCR({ bookId, pending, onUpdate }: { bookId: string; pend
     }
   };
 
-  if (!pending && !status && !running) return null;
   return <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-800 dark:bg-amber-950/30">
     <p className="font-semibold text-amber-900 dark:text-amber-200">Skanerlangan sahifalar: {pending} ta</p>
     <p className="mt-1 text-amber-800 dark:text-amber-300">Bepul OCR rasmlarni qurilmangizda o'qiydi, topilgan matnni kitobingizga saqlaydi. Ko'p sahifalar uzoq davom etishi mumkin; tabni ochiq saqlang. To'xtatsangiz, keyin davom ettirishingiz mumkin.</p>
-    <p className="mt-1 text-amber-800 dark:text-amber-300">Mashqlar avtomatik aniqlanadi, lekin xatolar bo'lishi mumkin. Tarjima va darajaga mos tanlash hali alohida bosqich.</p>
+    <p className="mt-1 text-amber-800 dark:text-amber-300">Tajriba funksiyasi: mashqlar tushib qolishi mumkin. Saqlangan sahifani xavfsiz qayta tahlil qilish hali yo'q; avval kichik sinov qiling. Natijalar tasdiqlangan javob emas.</p>
     {status && <p role="status" className="mt-2 text-slate-700 dark:text-slate-200">{status}</p>}
     {error && <p role="alert" className="mt-2 text-red-700 dark:text-red-300">{error}</p>}
-    <div className="mt-3">{running ? <Button variant="secondary" size="sm" onClick={() => { stopped.current = true; setStatus("Joriy sahifa tugagach to'xtaydi..."); }}>To'xtatish</Button> :
-      <Button size="sm" disabled={!pending} onClick={start}>Bepul OCRni boshlash</Button>}</div>
+    {preview && <div className="mt-3 rounded-lg bg-white p-3 dark:bg-slate-900">
+      <p className="font-medium">{preview.page_number}-PDF sahifa: {preview.exercises.length} ta mashq nomzodi. Dars: {preview.lesson?.title || "biriktirilmagan"}.</p>
+      <p className="text-xs">{preview.already_processed ? "Sahifa oldin ishlangan; bu faqat yangi ko'rib chiqish." : "Sinov natijasi saqlanmagan."}</p>
+      {preview.exercises.map((ex, i) => <div key={i} className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+        <p>{ex.title} · {ex.type} · {ex.questions.length} savol · {ex.geometry ? "koordinata bor" : "koordinata yo'q"}</p>
+        <p>{ex.instructions}</p><ul className="ml-4 list-disc">{ex.questions.map((q, j) => <li key={j}>{q.number}. {q.prompt}</li>)}</ul>
+      </div>)}
+      <details className="mt-2"><summary>OCR matni</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{preview.text}</pre></details>
+      {!!preview.warnings.length && <details className="mt-2"><summary>Ogohlantirishlar</summary><ul>{preview.warnings.map((w, i) => <li key={i}>{w.message_uz}</li>)}</ul></details>}
+    </div>}
+    <div className="mt-3 flex flex-wrap items-center gap-2">{running ? <Button variant="secondary" size="sm" onClick={() => { stopped.current = true; setStatus("Joriy sahifa tugagach to'xtaydi..."); }}>To'xtatish</Button> : <>
+      <label>Sahifa <input aria-label="OCR sinov sahifasi" type="number" min={1} max={pageCount} value={pageInput} onChange={(e) => setPageInput(e.target.value)} className="w-20 rounded border border-slate-300 bg-white px-2 py-1 dark:bg-slate-800" /></label>
+      <Button variant="secondary" size="sm" disabled={!pageCount} onClick={() => start(true)}>Sahifani saqlamasdan sinash</Button>
+      <Button size="sm" disabled={!pending} onClick={() => start(false)}>Bepul OCRni saqlash</Button></>}</div>
   </div>;
 }

@@ -10,10 +10,12 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { get, post } from "@/lib/api";
 import { trustedBlank, chooseLesson } from "@/lib/reader-utils";
+import { withTimeout } from "@/lib/timeout";
 import type { Exercise, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
 import { Button, Card, Spinner, useToast } from "@/components/ui";
 import { PdfViewer, type BlankOverlay } from "@/components/reader/pdf-viewer";
 import { ExerciseCard, type FbValues } from "@/components/reader/exercise-card";
+import { OcrReview } from "@/components/reader/ocr-review";
 
 function ReaderInner() {
   const { bookId } = useParams<{ bookId: string }>();
@@ -22,6 +24,10 @@ function ReaderInner() {
   const { toast } = useToast();
 
   const [struct, setStruct] = useState<Structure | null>(null);
+  const [structureError, setStructureError] = useState("");
+  const [exerciseError, setExerciseError] = useState("");
+  const [structureRetry, setStructureRetry] = useState(0);
+  const [exerciseRetry, setExerciseRetry] = useState(0);
   const [lessonId, setLessonId] = useState<string>("");
   const [exercises, setExercises] = useState<Exercise[] | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
@@ -36,23 +42,32 @@ function ReaderInner() {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    setStructureError(""); setStruct(null);
     (async () => {
-      const s = await get<Structure>(`/books/${bookId}/structure`);
+      const s = await withTimeout(get<Structure>(`/books/${bookId}/structure`), 45_000,
+        "Kitob ma'lumotlari yuklanishi uzoq davom etdi.");
+      if (cancelled) return;
       setStruct(s);
       const requested = search.get("lesson");
-      setLessonId(chooseLesson(s.lessons, s.lessons_progress, requested)?.id || "");
-    })().catch(() => toast("Kitob yuklanmadi", "error"));
+      const selected = chooseLesson(s.lessons, s.lessons_progress, requested)?.id || "";
+      setLessonId(selected);
+      if (!selected) setExerciseError("Kitobda ochiladigan dars topilmadi.");
+    })().catch((e) => { if (!cancelled) setStructureError(e instanceof Error ? e.message : "Kitob yuklanmadi"); });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookId]);
+  }, [bookId, structureRetry]);
 
   useEffect(() => {
     if (!lessonId || !struct) return;
     let cancelled = false;
     setExercises(null);
+    setExerciseError("");
     setFbValues({});
     setOverlayStates({});
     (async () => {
-      const exs = await get<Exercise[]>(`/lessons/${lessonId}/exercises`);
+      const exs = await withTimeout(get<Exercise[]>(`/lessons/${lessonId}/exercises`), 45_000,
+        "Mashqlarni yuklash uzoq davom etdi.");
       if (cancelled) return;
       setExercises(exs);
       const l = struct.lessons.find((x) => x.id === lessonId) || null;
@@ -61,10 +76,10 @@ function ReaderInner() {
       const lastPage = savedPositions.current[lessonId] || lp?.last_page || 0;
       const savedPage = lastPage > 0 && lastPage <= struct.book.page_count ? lastPage : 0;
       setPosition({ lessonId, page: savedPage || l?.page_start || 1 });
-    })().catch(() => { if (!cancelled) toast("Mashqlar yuklanmadi", "error"); });
+    })().catch((e) => { if (!cancelled) setExerciseError(e instanceof Error ? e.message : "Mashqlar yuklanmadi"); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lessonId]);
+  }, [lessonId, exerciseRetry, struct]);
 
   // Serialize position saves to prevent an older request overwriting a newer page.
   useEffect(() => {
@@ -139,7 +154,8 @@ function ReaderInner() {
   if (!struct) {
     return (
       <main className="flex min-h-[70vh] items-center justify-center">
-        <Spinner className="h-8 w-8 text-brand-500" />
+        {structureError ? <Card><p role="alert">{structureError}</p><Button className="mt-3" onClick={() => setStructureRetry((n) => n + 1)}>Qayta urinish</Button></Card>
+          : <Spinner className="h-8 w-8 text-brand-500" />}
       </main>
     );
   }
@@ -185,9 +201,12 @@ function ReaderInner() {
             onGoTo={setPage}
             overlays={overlays}
           />
+          <OcrReview bookId={bookId} pageNumber={page} />
           {/* exercises below the PDF on medium screens */}
           <div data-exercises className="thin-scroll space-y-4 2xl:hidden">
-            {exercises === null ? (
+            {exerciseError ? (
+              <Card><p role="alert" className="text-sm text-red-600">{exerciseError}</p>{lessonId && <Button className="mt-2" size="sm" onClick={() => setExerciseRetry((n) => n + 1)}>Qayta urinish</Button>}</Card>
+            ) : exercises === null ? (
               <div className="flex justify-center py-8"><Spinner className="h-6 w-6 text-brand-500" /></div>
             ) : (
               <>
@@ -205,7 +224,7 @@ function ReaderInner() {
                 {exercises.length === 0 && (
                   <Card>
                     <p className="text-sm text-slate-500 dark:text-slate-400">
-                      Bu darsda mashq topilmadi — AI murabbiydan qo'shimcha mashq so'rashingiz mumkin.
+                      Bu darsda mashq aniqlanmadi. Skanerlangan kitob bo'lsa, kitob sahifasida OCR holatini tekshiring.
                     </p>
                   </Card>
                 )}
@@ -220,7 +239,9 @@ function ReaderInner() {
 
         {/* wide-screen exercise sidebar */}
         <aside data-exercises className="thin-scroll hidden w-[440px] shrink-0 space-y-4 overflow-y-auto border-l border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950 2xl:block">
-          {exercises === null ? (
+          {exerciseError ? (
+              <Card><p role="alert" className="text-sm text-red-600">{exerciseError}</p>{lessonId && <Button className="mt-2" size="sm" onClick={() => setExerciseRetry((n) => n + 1)}>Qayta urinish</Button>}</Card>
+            ) : exercises === null ? (
             <div className="flex justify-center py-8"><Spinner className="h-6 w-6 text-brand-500" /></div>
           ) : (
             <>
@@ -238,7 +259,7 @@ function ReaderInner() {
               {exercises.length === 0 && (
                 <Card>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    Bu darsda mashq topilmadi — AI murabbiydan qo'shimcha mashq so'rashingiz mumkin.
+                    Bu darsda mashq aniqlanmadi. Skanerlangan kitob bo'lsa, kitob sahifasida OCR holatini tekshiring.
                   </p>
                 </Card>
               )}
