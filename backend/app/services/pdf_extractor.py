@@ -40,7 +40,7 @@ def validate_and_open(content: bytes) -> fitz.Document:
         doc.close()
         raise PdfValidationError("PDF_EMPTY", "PDF faylda sahifalar yo'q.", 422)
     if doc.page_count > settings.max_pages:
-        n, doc.page_count = doc.page_count, 0
+        n = doc.page_count
         doc.close()
         raise PdfValidationError(
             "TOO_MANY_PAGES",
@@ -111,7 +111,6 @@ def ocr_page(page: fitz.Page, dpi: int = 200) -> str:
     """Rasterize + OCR one page. Returns '' if OCR is unavailable (callers report honestly)."""
     if not ocr_available():
         return ""
-    import numpy as np  # pytesseract needs PIL images only; numpy optional
     import pytesseract
     from PIL import Image
 

@@ -26,7 +26,7 @@ export interface Book {
   id: string;
   title: string;
   original_filename: string;
-  status: "uploaded" | "processing" | "ready" | "failed";
+  status: "uploading" | "uploaded" | "processing" | "ready" | "failed";
   page_count: number;
   file_size_bytes: number;
   description: string;
@@ -73,6 +73,7 @@ export interface LessonProgress {
   exercises_checked: number;
   time_spent_seconds: number;
   last_page: number;
+  last_visited_at: string | null;
   vocab_gate_passed: boolean;
   has_vocabulary: boolean;
   locked: boolean;
@@ -89,6 +90,7 @@ export interface Structure {
     questions_with_key: number;
     vocabulary: number;
     pages_ocr_used: number;
+    pages_needing_ocr: number;
     pages_with_warnings: number;
     ocr_available: boolean;
   };

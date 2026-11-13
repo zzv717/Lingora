@@ -13,6 +13,17 @@ from app.core.errors import ApiError
 
 log = logging.getLogger("lingora.storage")
 
+DIRECT_UPLOAD_FILENAME = "direct-upload.pdf"
+
+
+def direct_upload_token_active(book) -> bool:
+    """A signed upload token can recreate a deleted object until its TTL elapses."""
+    from datetime import datetime, timedelta, timezone
+    from app.db.mixins import ensure_utc
+    return (book.storage_path.endswith("/" + DIRECT_UPLOAD_FILENAME)
+            and datetime.now(timezone.utc) < ensure_utc(book.created_at) + timedelta(hours=2, minutes=1))
+
+
 
 class StorageBackend(ABC):
     @abstractmethod
@@ -109,6 +120,56 @@ class SupabaseStorage(StorageBackend):
             log.error("Supabase storage save failed with status %d", resp.status_code)
             raise ApiError("STORAGE_ERROR", f"Fayl saqlanmadi (Supabase {resp.status_code}).", 500)
         return rel
+
+    def require_private_upload_limit(self) -> None:
+        """Do not issue a direct-upload token unless storage enforces the byte cap."""
+        import httpx
+        try:
+            resp = httpx.get(f"{self.base}/bucket/{self.bucket}", headers=self.headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            limit = data.get("file_size_limit")
+            if data.get("public") is not False or not isinstance(limit, int) or limit != settings.upload_max_mb * 1024 * 1024:
+                raise ValueError("private bucket with exact file size limit required")
+        except Exception as e:
+            log.warning("Direct upload bucket settings invalid: %s", type(e).__name__)
+            raise ApiError("UPLOAD_BUCKET_LIMIT", "Private bucket hajm chegarasini 50 MB qilib sozlang.", 503)
+
+    def create_signed_upload(self, storage_path: str) -> str:
+        """Issue a path-scoped, non-upserting upload token (valid for two hours)."""
+        import httpx
+        from urllib.parse import parse_qs, urlsplit
+
+        try:
+            resp = httpx.post(
+                f"{self.base}/object/upload/sign/{self.bucket}/{storage_path}",
+                headers=self.headers, json={}, timeout=30,
+            )
+            resp.raise_for_status()
+            token = parse_qs(urlsplit(resp.json()["url"]).query).get("token", [""])[0]
+            if not token:
+                raise ValueError("missing upload token")
+            return token
+        except Exception as e:
+            log.warning("Supabase signed upload creation failed: %s", type(e).__name__)
+            raise ApiError("STORAGE_ERROR", "Yuklash uchun ruxsat yaratilmadi.", 502)
+
+    def read_limited(self, storage_path: str, max_bytes: int) -> bytes:
+        """Download at most max_bytes, even if the storage limit was misconfigured."""
+        import httpx
+
+        with httpx.stream("GET", self._object_path(storage_path), headers=self.headers, timeout=120) as resp:
+            if resp.status_code != 200:
+                raise ApiError("FILE_NOT_FOUND", "Yuklangan fayl topilmadi.", 404)
+            length = resp.headers.get("content-length")
+            if length and length.isdigit() and int(length) > max_bytes:
+                raise ApiError("FILE_TOO_LARGE", "Yuklangan fayl juda katta.", 413)
+            result = bytearray()
+            for chunk in resp.iter_bytes():
+                if len(result) + len(chunk) > max_bytes:
+                    raise ApiError("FILE_TOO_LARGE", "Yuklangan fayl juda katta.", 413)
+                result.extend(chunk)
+            return bytes(result)
 
     def read(self, storage_path: str) -> bytes:
         import httpx

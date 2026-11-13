@@ -302,10 +302,12 @@ def reset_password(data: ResetPasswordIn, db: Session = Depends(get_db)):
 def delete_account(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Full GDPR-style deletion: books, answers, vocabulary, progress — everything cascades.
     Storage is verified before DB commits deletion."""
-    from app.services.storage import get_storage
+    from app.services.storage import get_storage, direct_upload_token_active
     from app.models import Book
 
     books = db.scalars(select(Book).where(Book.user_id == user.id)).all()
+    if any(direct_upload_token_active(b) for b in books):
+        raise ApiError("UPLOAD_ACTIVE", "Hisobni o'chirish uchun oxirgi yuklashdan keyin 2 soat kuting.", 409)
     storage = get_storage()
     for b in books:
         if b.storage_path:

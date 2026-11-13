@@ -96,7 +96,10 @@ def test_full_pipeline_detection(client):
     assert go["needs_translation"] is False
 
 
-def test_scanned_page_reports_ocr_honestly(client):
+def test_scanned_page_reports_ocr_honestly(client, monkeypatch):
+    # Make this unavailable-OCR test independent of the host's Tesseract install.
+    import app.services.pdf_extractor as extractor
+    monkeypatch.setattr(extractor, "ocr_available", lambda: False)
     tokens = make_user(client, "scan@example.com")
     h = auth_headers(tokens["access_token"])
     r = upload(client, h, make_scanned_like_book())
@@ -119,3 +122,89 @@ def test_delete_book_cascades(client, db):
 
     assert db.get(Book, book_id) is None
     assert db.query(VocabularyWord).filter(VocabularyWord.book_id == book_id).count() == 0
+
+
+def test_randomized_pdf_upload_and_download(client):
+    """Exercise a fresh PDF variant end-to-end, including the private original."""
+    import secrets
+    import fitz
+
+    marker = secrets.token_hex(8)
+    doc = fitz.open(stream=make_sample_book(), filetype="pdf")
+    page = doc.new_page()
+    page.insert_text((50, 72), f"Random reading sample {marker}. Reading is useful.")
+    content = doc.tobytes()
+    doc.close()
+
+    headers = auth_headers(make_user(client, f"pdf-{marker}@example.com")["access_token"])
+    response = upload(client, headers, content, title="Random PDF")
+    assert response.status_code == 201, response.text
+    book_id = response.json()["id"]
+    job = wait_for_book(client, headers, book_id)
+    assert job["status"] == "completed", job
+    structure = client.get(f"{API}/books/{book_id}/structure", headers=headers)
+    assert structure.status_code == 200
+    assert structure.json()["coverage"]["exercises"] >= 3
+    original = client.get(f"{API}/books/{book_id}/file", headers=headers)
+    assert original.status_code == 200
+    assert original.content == content
+
+
+def test_sync_analysis_runs_before_upload_response(client, monkeypatch):
+    """Short serverless jobs must finish while the request is still active."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "task_backend", "sync")
+    headers = auth_headers(make_user(client, "sync-pdf@example.com")["access_token"])
+    response = upload(client, headers, make_sample_book(), title="Synchronous PDF")
+    assert response.status_code == 201, response.text
+    status = client.get(f"{API}/books/{response.json()['id']}/status", headers=headers)
+    assert status.json()["status"] == "completed", status.text
+
+
+def test_pdf_page_limit_returns_clear_error(client, monkeypatch):
+    import fitz
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "max_pages", 1)
+    doc = fitz.open()
+    doc.new_page()
+    doc.new_page()
+    content = doc.tobytes()
+    doc.close()
+    headers = auth_headers(make_user(client, "limit-pdf@example.com")["access_token"])
+    response = upload(client, headers, content)
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["code"] == "TOO_MANY_PAGES"
+
+
+def test_sync_analysis_exception_reports_failed_job(client, monkeypatch):
+    from app.core.config import settings
+    from app.services.pipeline import Pipeline
+
+    def fail(_self):
+        raise RuntimeError("worker crashed")
+
+    monkeypatch.setattr(settings, "task_backend", "sync")
+    monkeypatch.setattr(Pipeline, "run", fail)
+    headers = auth_headers(make_user(client, "sync-fail@example.com")["access_token"])
+    response = upload(client, headers, make_sample_book())
+    assert response.status_code == 201, response.text
+    status = client.get(f"{API}/books/{response.json()['id']}/status", headers=headers)
+    assert status.json()["status"] == "failed"
+    assert status.json()["error_code"] == "PIPELINE_ERROR"
+
+
+def test_serverless_cold_start_does_not_fail_other_jobs(monkeypatch):
+    import asyncio
+    import app.services.tasks as tasks
+    from app.main import app, lifespan
+
+    called = []
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setattr(tasks, "recover_stuck_jobs", lambda: called.append(True))
+
+    async def start():
+        async with lifespan(app):
+            pass
+
+    asyncio.run(start())
+    assert called == []

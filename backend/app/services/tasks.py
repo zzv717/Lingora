@@ -3,6 +3,7 @@
 - `inline` (default): ThreadPoolExecutor inside the API process. Survives everywhere
   (sandbox, small VPS). Jobs live in the processing_jobs table, so the UI tracks them.
 - `celery`: real distributed queue (REDIS_URL + celery worker). Same task signature.
+- `sync`: execute during the request for short serverless jobs. Subject to request timeouts.
 """
 import logging
 import threading
@@ -48,17 +49,28 @@ def _run_pipeline_job(book_id: str, user_id: str) -> None:
     except Exception:
         log.exception("Job for book %s crashed", book_id)
         try:
+            db.rollback()
+            job = db.scalar(select(ProcessingJob).where(
+                ProcessingJob.book_id == book_id).order_by(ProcessingJob.created_at.desc()).limit(1))
+            if job and job.status in ("queued", "running"):
+                job.status = "failed"
+                job.error_code = "PIPELINE_ERROR"
+                job.error_message = "Kitobni tahlil qilishda xatolik yuz berdi. Qayta urinib ko'ring."
+                job.finished_at = datetime.now(timezone.utc)
             book = db.get(Book, book_id)
-            if book:
+            if book and book.status in ("uploaded", "processing"):
                 book.status = "failed"
             db.commit()
         except Exception:
-            pass
+            log.exception("Could not record failure for book %s", book_id)
     finally:
         db.close()
 
 
 def enqueue_book_analysis(book_id: str, user_id: str) -> None:
+    if settings.task_backend == "sync":
+        _run_pipeline_job(book_id, user_id)
+        return
     if settings.task_backend == "celery" and settings.redis_url:
         from app.tasks.celery_app import analyze_book  # optional module
 

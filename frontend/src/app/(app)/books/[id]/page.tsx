@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { get } from "@/lib/api";
-import type { Structure, VocabWord } from "@/lib/types";
+import type { Structure, VocabWord, Job } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
+import { BrowserOCR } from "@/components/reader/browser-ocr";
 
 const TYPE_LABELS: Record<string, string> = {
   fill_blank: "Bo'sh joy",
@@ -23,11 +24,16 @@ export default function BookDetailPage() {
   const router = useRouter();
   const [struct, setStruct] = useState<Structure | null>(null);
   const [error, setError] = useState("");
+  const [aiWarning, setAiWarning] = useState("");
 
   useEffect(() => {
     (async () => {
       try {
         setStruct(await get<Structure>(`/books/${id}/structure`));
+        try {
+          const job = await get<Job | null>(`/books/${id}/status`);
+          setAiWarning(job?.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED")?.message_uz || "");
+        } catch { /* Structure remains usable if status is unavailable. */ }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Yuklanmadi");
       }
@@ -54,6 +60,7 @@ export default function BookDetailPage() {
   }
 
   const cov = struct.coverage;
+  const hasProgress = Object.values(struct.lessons_progress).some((p) => !!p.last_visited_at);
   const grouped = struct.chapters.map((ch) => ({
     chapter: ch,
     lessons: struct.lessons.filter((l) => l.chapter_id === ch.id),
@@ -63,6 +70,7 @@ export default function BookDetailPage() {
     <>
       <TopBar title={struct.book.title} />
       <main className="mx-auto max-w-5xl px-4 py-6 lg:px-8">
+        {aiWarning && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{aiWarning}</p>}
         {/* header card */}
         <Card className="mb-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -84,15 +92,13 @@ export default function BookDetailPage() {
             </div>
             <div className="flex gap-2">
               <Button onClick={() => router.push(`/reader/${id}`)} size="lg">
-                O'qishni boshlash →
+                {hasProgress ? "Davom ettirish →" : "O'qishni boshlash →"}
               </Button>
             </div>
           </div>
-          {!cov.ocr_available && (
-            <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-              ℹ️ Skanerlangan kitoblar uchun OCR serverda sozlanmagan. Matnli PDF'lar to'liq ishlaydi.
-            </p>
-          )}
+          <BrowserOCR bookId={id} pending={cov.pages_needing_ocr || 0} onUpdate={() => {
+            get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});
+          }} />
         </Card>
 
         {/* chapters & lessons */}
@@ -145,10 +151,8 @@ function LessonRow({ lesson, progress, bookId }: {
       locked ? "border-slate-200 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-800/40"
              : "border-slate-200 hover:border-brand-300 dark:border-slate-700 dark:hover:border-brand-700"}`}>
       <div className="min-w-0">
-        <Link href={`/reader/${bookId}?lesson=${lesson.id}`}
-          className={`font-medium ${locked ? "text-slate-400" : "text-slate-700 hover:text-brand-600 dark:text-slate-200"}`}>
-          {lesson.title}
-        </Link>
+        {locked ? <span className="font-medium text-slate-400">{lesson.title}</span> :
+          <Link href={`/reader/${bookId}?lesson=${lesson.id}`} className="font-medium text-slate-700 hover:text-brand-600 dark:text-slate-200">{lesson.title}</Link>}
         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-400">
           <span>{lesson.page_start}-{lesson.page_end} bet</span>
           {lesson.topic && <span>· {lesson.topic}</span>}
@@ -167,7 +171,7 @@ function LessonRow({ lesson, progress, bookId }: {
         )}
         {!locked && (
           <Link href={`/reader/${bookId}?lesson=${lesson.id}`}>
-            <Button size="sm" variant="secondary">Ochish</Button>
+            <Button size="sm" variant="secondary">{progress?.last_visited_at ? "Davom ettirish" : "Boshlash"}</Button>
           </Link>
         )}
       </div>

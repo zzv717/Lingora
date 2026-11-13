@@ -45,3 +45,19 @@ def test_supabase_schema_rls_policies_count():
     for t in tables:
         assert f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;" in content
         assert f'CREATE POLICY "{t}_owner_all" ON {t}' in content
+
+
+def test_alembic_accepts_url_encoded_database_password():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {**os.environ, "DATABASE_URL": "postgresql://user:p%40ss@localhost/lingora"}
+    backend_dir = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        cwd=backend_dir, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CREATE TABLE users" in result.stdout

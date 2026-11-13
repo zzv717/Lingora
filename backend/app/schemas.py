@@ -80,6 +80,14 @@ class ForgotPasswordOut(BaseModel):
 
 # ---------- Books / pipeline ----------
 
+class DirectUploadIn(BaseModel):
+    filename: str = Field(min_length=1, max_length=500)
+    title: str = Field(default="", max_length=500)
+    size_bytes: int = Field(gt=0)
+    consent: bool
+
+
+
 class BookOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -368,3 +376,12 @@ class PlanOut(BaseModel):
 class OkOut(BaseModel):
     ok: bool = True
     message_uz: str = ""
+
+
+class OCRLineIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+
+
+class OCRPageIn(BaseModel):
+    lines: list[OCRLineIn] = Field(min_length=1, max_length=500)

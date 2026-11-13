@@ -89,24 +89,17 @@ def main():
 
     st, sess = req(f"/vocabulary/sessions?lesson_id={l1['id']}&kind=lesson_gate", "POST", token=tok)
     ok(st == 201, f"vocab session ({len(sess['items'])} items)")
-    words = {w["term"]: w for w in req(f"/books/{bid}/vocabulary", token=tok)[1]}
+    words = {w["id"]: w for w in req(f"/books/{bid}/vocabulary", token=tok)[1]}
 
     def solve(item):
-        # listening/spelling: the word is pronounced client-side via TTS (audio_text)
-        if item["type"] in ("listening", "spelling") and item.get("audio_text"):
-            return item["audio_text"]
-        if item["type"] in ("choice_en_uz", "written_en_uz"):
-            return next((w["translation_uz"] for w in words.values() if w["term"] == item["prompt"]), None)
-        if item["type"] == "sentence_blank" and "_____" in item["prompt"]:
-            for w in words.values():
-                ex = w.example_sentence
-                if ex and all(part.strip() and part in ex for part in item["prompt"].split("_____")):
-                    return w["term"]
-        for w in words.values():
-            t = w["translation_uz"].split(",")[0].strip()
-            if t and t in item["prompt"]:
-                return w["term"]
-        return None
+        # Session items expose their word_id, so use that rather than guessing
+        # from prompts (which may be translations, audio or a blank sentence).
+        word = words[item["word_id"]]
+        if item["type"] == "choice_en_uz":
+            return word["translation_uz"].split(",")[0].strip()
+        if item["type"] == "written_en_uz":
+            return word["translation_uz"]
+        return word["term"]
 
     for _round in range(2):
         seen = {i["item_id"]: i for i in sess["items"]}

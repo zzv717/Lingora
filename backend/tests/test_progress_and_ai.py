@@ -162,3 +162,19 @@ def test_plan_limits_visible(client):
     assert data["plan"] == "free"
     assert data["max_books"] == 10  # set in test env
     assert data["ai_configured"] is False
+
+
+def test_reader_position_is_saved_and_returned_without_adding_study_time(client):
+    h, book_id = _setup(client, "resume@example.com")
+    struct = client.get(f"{API}/books/{book_id}/structure", headers=h).json()
+    lesson_id = struct["lessons"][0]["id"]
+    assert struct["lessons_progress"][lesson_id]["last_visited_at"] is None
+    assert client.post(f"{API}/progress/heartbeat", headers=h,
+                       json={"seconds": 0, "lesson_id": lesson_id, "page": 2}).status_code == 200
+    updated = client.get(f"{API}/books/{book_id}/structure", headers=h).json()["lessons_progress"][lesson_id]
+    assert updated["last_page"] == 2
+    assert updated["last_visited_at"]
+    assert updated["time_spent_seconds"] == 0
+    # Time heartbeats must not erase the saved location.
+    client.post(f"{API}/progress/heartbeat", headers=h, json={"seconds": 60, "lesson_id": lesson_id})
+    assert client.get(f"{API}/books/{book_id}/structure", headers=h).json()["lessons_progress"][lesson_id]["last_page"] == 2

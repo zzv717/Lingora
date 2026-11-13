@@ -22,3 +22,6 @@ backend/data/
 
 # OS
 .DS_Store
+
+# Generated from npm dependencies at install time
+frontend/public/ocr/

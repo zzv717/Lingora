@@ -2,11 +2,17 @@
 /** Book upload modal: PDF validation, copyright consent, progress + status polling. */
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiErr, getAccessToken } from "@/lib/api";
+import * as tus from "tus-js-client";
+import { api, getAccessToken } from "@/lib/api";
 import { Button, ErrorBox, Input, Modal, Progress, useToast } from "@/components/ui";
 import type { Book, Job } from "@/lib/types";
 
 const MAX_MB = 50;
+
+type UploadPreparation = { direct: false } | {
+  direct: true; book_id: string; endpoint: string; bucket: string;
+  path: string; token: string; public_key: string;
+};
 
 export function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -18,11 +24,13 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<{ file: File; prepared: Extract<UploadPreparation, { direct: true }>; done: boolean } | null>(null);
   const router = useRouter();
   const { toast } = useToast();
 
   const reset = () => {
     setFile(null);
+    uploadRef.current = null;
     setTitle("");
     setConsent(false);
     setError("");
@@ -41,15 +49,12 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
   const poll = async (bookId: string): Promise<Job> => {
     for (let i = 0; i < 240; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      try {
-        const job = await api<Job>(`/books/${bookId}/status`);
-        setProgress(job.progress);
-        setStage(job.stage_label_uz);
-        if (job.status === "completed") return job;
-        if (job.status === "failed") throw new Error(job.error_message || "Tahlil bajarilmadi");
-      } catch (e) {
-        if (e instanceof ApiErr) throw e;
-      }
+      const job = await api<Job | null>(`/books/${bookId}/status`);
+      if (!job) throw new Error("Tahlil holati topilmadi.");
+      setProgress(job.progress);
+      setStage(job.stage_label_uz);
+      if (job.status === "completed") return job;
+      if (job.status === "failed") throw new Error(job.error_message || "Tahlil bajarilmadi");
     }
     throw new Error("Tahlil juda uzoq davom etmoqda. Keyinroq 'Kitoblarim' bo'limidan tekshiring.");
   };
@@ -71,36 +76,70 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
     }
     setUploading(true);
     setPhase("uploading");
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("title", title);
-    fd.append("consent", "true");
     try {
-      // manual fetch to track upload progress
-      const book = await new Promise<Book>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/backend/api/v1/books/upload");
-        xhr.setRequestHeader("authorization", `Bearer ${getAccessToken()}`);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 30)); // upload ~30%
-        };
-        xhr.onload = () => {
-          if (xhr.status === 201) resolve(JSON.parse(xhr.responseText));
-          else {
-            let msg = `Yuklashda xatolik (${xhr.status})`;
-            try {
-              msg = JSON.parse(xhr.responseText).error.message_uz || msg;
-            } catch { /* noop */ }
-            reject(new Error(msg));
-          }
-        };
-        xhr.onerror = () => reject(new Error("Tarmoq xatosi"));
-        xhr.send(fd);
-      });
+      const prepared: UploadPreparation = uploadRef.current?.file === file
+        ? uploadRef.current.prepared
+        : await api<UploadPreparation>("/books/upload/prepare", {
+            method: "POST",
+            body: JSON.stringify({ filename: file.name, title, size_bytes: file.size, consent }),
+          });
+      let book: Book;
+      if (prepared.direct) {
+        if (uploadRef.current?.file !== file) uploadRef.current = { file, prepared, done: false };
+        if (!uploadRef.current.done) await new Promise<void>((resolve, reject) => {
+          const upload = new tus.Upload(file, {
+            endpoint: prepared.endpoint,
+            retryDelays: [0, 3000, 5000, 10000],
+            headers: { apikey: prepared.public_key, "x-signature": prepared.token },
+            metadata: { bucketName: prepared.bucket, objectName: prepared.path, contentType: "application/pdf", cacheControl: "3600" },
+            chunkSize: 6 * 1024 * 1024,
+            uploadDataDuringCreation: true,
+            removeFingerprintOnSuccess: true,
+            onProgress: (sent, total) => { if (total) setProgress(Math.round(sent / total * 30)); },
+            onSuccess: () => resolve(),
+            onError: () => reject(new Error("Storage’ga yuklash muvaffaqiyatsiz. Tarmoqni va Storage hajm limitini tekshiring.")),
+          });
+          upload.findPreviousUploads().then((previous) => {
+            // Only resume a URL for this reservation, not a different attempt on the same file.
+            const match = previous.find((p) => p.metadata?.objectName === prepared.path);
+            if (match) upload.resumeFromPreviousUpload(match);
+            upload.start();
+          }).catch(reject);
+        });
+        uploadRef.current.done = true;
+        setPhase("processing");
+        setStage("Kitob tekshirilmoqda va tahlil qilinmoqda...");
+        book = await api<Book>(`/books/upload/${prepared.book_id}/complete`, { method: "POST" });
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("title", title);
+        fd.append("consent", "true");
+        // Local/non-Supabase deployments retain the ordinary multipart path.
+        book = await new Promise<Book>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/backend/api/v1/books/upload");
+          xhr.setRequestHeader("authorization", `Bearer ${getAccessToken()}`);
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 30));
+          };
+          xhr.onload = () => {
+            if (xhr.status === 201) resolve(JSON.parse(xhr.responseText));
+            else {
+              let msg = `Yuklashda xatolik (${xhr.status})`;
+              try { msg = JSON.parse(xhr.responseText).error.message_uz || msg; } catch { /* non-JSON */ }
+              reject(new Error(msg));
+            }
+          };
+          xhr.onerror = () => reject(new Error("Tarmoq xatosi"));
+          xhr.send(fd);
+        });
+      }
       setPhase("processing");
-      setStage("AI kitobni tahlil qilmoqda...");
-      await poll(book.id);
-      toast("Kitob tayyor! 🎉", "success");
+      setStage("Kitob tahlil qilinmoqda...");
+      const job = await poll(book.id);
+      const aiWarning = job.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED");
+      toast(aiWarning?.message_uz || "Kitob tayyor! 🎉", aiWarning ? "error" : "success");
       reset();
       onClose();
       router.push(`/books/${book.id}`);
@@ -145,8 +184,8 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
               className="mt-0.5 h-4 w-4 rounded border-amber-300" />
             <span>
               Tasdiqlayman: ushbu kitobni qayta ishlash va shaxsiy o'quv maqsadida foydalanish
-              huquqiga egaman. Fayl <b>faqat men ko'radigan</b> shaxsiy kutubxonamda saqlanadi va
-              uchinchi shaxslarga tarqatilmaydi.
+              huquqiga egaman. Fayl shaxsiy kutubxonamda saqlanadi. AI yoqilgan bo'lsa, tahlil uchun
+              kitobdan ayrim matn parchalari AI provayderiga yuborilishi mumkin.
             </span>
           </label>
           <ErrorBox message={error} />

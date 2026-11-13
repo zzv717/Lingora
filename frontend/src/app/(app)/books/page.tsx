@@ -30,10 +30,14 @@ export default function BooksPage() {
 
   const doDelete = async () => {
     if (!confirmDelete) return;
-    await del(`/books/${confirmDelete.id}`);
-    toast("Kitob o'chirildi", "success");
-    setConfirmDelete(null);
-    load();
+    try {
+      await del(`/books/${confirmDelete.id}`);
+      toast("Kitob o'chirildi", "success");
+      setConfirmDelete(null);
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "O'chirishda xatolik", "error");
+    }
   };
 
   return (
@@ -108,6 +112,7 @@ function BookCard({ book, onDelete }: { book: Book; onDelete: () => void }) {
         {book.status === "ready" && <Badge tone="green">Tayyor</Badge>}
         {processing && <Badge tone="amber">Tahlil...</Badge>}
         {book.status === "failed" && <Badge tone="red">Xatolik</Badge>}
+        {book.status === "uploading" && <Badge tone="amber">Yuklash tugallanmagan</Badge>}
       </div>
 
       {processing && (

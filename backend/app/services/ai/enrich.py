@@ -9,10 +9,11 @@ import json
 import logging
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AnswerKey, Lesson, VocabularyWord
+from app.models import Book, Lesson, VocabularyWord
 from app.services.ai import usage as usage_service
 from app.services.ai.provider import ChatMessage, structured, get_provider
 from app.services.structure_detector import DetectedStructure
@@ -90,10 +91,10 @@ def enrich_vocabulary_translations(db: Session, user_id: str, words: list[Vocabu
     """Translate English terms to Uzbek; mark result as AI (needs_translation=False)."""
     if not settings.ai_configured or not words:
         return 0
-    usage_service.enforce_ai_quota(db, user_id, "vocab_translate")
     done = 0
     B = 40
     for i in range(0, len(words), B):
+        usage_service.enforce_ai_quota(db, user_id, "vocab_translate")
         batch = words[i:i + B]
         schema, resp = structured(
             TranslateVocabOut,
@@ -150,7 +151,37 @@ def enrich_grammar_explanations(db: Session, user_id: str, book_title: str, less
         for l in lessons:
             if l.title == title and item.get("explanation_uz"):
                 l.grammar_explanation_uz = str(item["explanation_uz"])[:6000]
-                l.summary = str(item.get("summary_uz", l.summary))[:1000]
                 done += 1
     db.commit()
     return done
+
+
+def enrich_book(db: Session, book_id: str) -> list[dict]:
+    """Enrich persisted missing vocabulary and lesson notes without replacing textbook data.
+
+    Each stage is independent: failures leave the extracted book usable and are
+    returned to the job so the user is not told AI succeeded when it did not.
+    """
+    if not settings.ai_configured:
+        return []
+    book = db.get(Book, book_id)
+    if not book:
+        raise ValueError("Book not found")
+    words = list(db.scalars(select(VocabularyWord).where(
+        VocabularyWord.book_id == book_id, VocabularyWord.needs_translation.is_(True))).all())
+    lessons = list(db.scalars(select(Lesson).where(
+        Lesson.book_id == book_id, Lesson.grammar_explanation_uz == "")).all())
+    warnings = []
+    for stage, action in (
+        ("vocabulary", lambda: enrich_vocabulary_translations(db, book.user_id, words)),
+        ("grammar", lambda: [enrich_grammar_explanations(db, book.user_id, book.title, lessons[i:i + 20])
+                             for i in range(0, len(lessons), 20)]),
+    ):
+        try:
+            action()
+        except Exception as exc:
+            db.rollback()
+            log.warning("AI enrichment stage %s failed: %s", stage, type(exc).__name__)
+            warnings.append({"page": 0, "code": "AI_ENRICHMENT_FAILED",
+                             "message_uz": "AI qo'shimcha tahlili bajarilmadi; asosiy tahlil saqlandi."})
+    return warnings
