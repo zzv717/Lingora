@@ -176,3 +176,15 @@ def test_feature_off_uses_original_upload(client, monkeypatch):
     monkeypatch.setattr(settings, "storage_backend", "supabase")
     monkeypatch.setattr(settings, "supabase_direct_upload_enabled", False)
     assert prepare(client, owner, 100).json() == {"direct": False}
+
+
+def test_upload_limits_follow_server_configuration(client, monkeypatch):
+    owner = headers(client, 'limits@example.com')
+    monkeypatch.setattr(settings, 'upload_max_mb', 50)
+    monkeypatch.setattr(settings, 'max_pages', 300)
+    monkeypatch.setattr(settings, 'storage_backend', 'supabase')
+    monkeypatch.setattr(settings, 'supabase_direct_upload_enabled', True)
+    response = client.get('/api/v1/books/upload/limits', headers=owner)
+    assert response.status_code == 200
+    assert response.json() == {'max_bytes': 50 * 1024 * 1024, 'max_pages': 300, 'direct_upload': True}
+    assert client.get('/api/v1/books/upload/limits').status_code == 401

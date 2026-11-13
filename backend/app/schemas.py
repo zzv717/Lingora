@@ -394,3 +394,16 @@ class OCRLineIn(BaseModel):
 
 class OCRPageIn(BaseModel):
     lines: list[OCRLineIn] = Field(min_length=1, max_length=500)
+
+
+class OCRAIReviewIn(OCRPageIn):
+    consent_text_to_provider: bool
+
+
+class VisionMapPreviewIn(BaseModel):
+    page_numbers: list[int] = Field(min_length=1, max_length=5)
+    consent_images_to_provider: bool
+
+
+class VisionTopicPreviewIn(VisionMapPreviewIn):
+    topic: str = Field(max_length=300)

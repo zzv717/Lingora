@@ -1,13 +1,13 @@
 "use client";
 /** Book upload modal: PDF validation, copyright consent, progress + status polling. */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
 import { api, getAccessToken } from "@/lib/api";
 import { Button, ErrorBox, Input, Modal, Progress, useToast } from "@/components/ui";
 import type { Book, Job } from "@/lib/types";
 
-const MAX_MB = 100;
+type UploadLimits = { max_bytes: number; max_pages: number; direct_upload: boolean };
 
 type UploadPreparation = { direct: false } | {
   direct: true; book_id: string; endpoint: string; bucket: string;
@@ -16,6 +16,14 @@ type UploadPreparation = { direct: false } | {
 
 export function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [file, setFile] = useState<File | null>(null);
+  const [limits, setLimits] = useState<UploadLimits | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setLimits(null);
+    api<UploadLimits>("/books/upload/limits").then((data) => { if (active) setLimits(data); }).catch(() => {});
+    return () => { active = false; };
+  }, [open]);
   const [title, setTitle] = useState("");
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState("");
@@ -66,8 +74,8 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
       setError("Faqat PDF fayl qabul qilinadi.");
       return;
     }
-    if (file.size > MAX_MB * 1024 * 1024) {
-      setError(`Fayl hajmi ${MAX_MB} MB dan kichik bo'lishi kerak.`);
+    if (limits && file.size > limits.max_bytes) {
+      setError(`Fayl hajmi ${limits.max_bytes / (1024 * 1024)} MiB dan oshmasligi kerak.`);
       return;
     }
     if (!consent) {
@@ -126,7 +134,9 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
           xhr.onload = () => {
             if (xhr.status === 201) resolve(JSON.parse(xhr.responseText));
             else {
-              let msg = `Yuklashda xatolik (${xhr.status})`;
+              let msg = xhr.status === 413
+                ? "Yuklashda 413: server yoki hosting fayl hajmini qabul qilmadi. To'g'ridan-to'g'ri yuklash sozlamasini tekshiring."
+                : `Yuklashda xatolik (${xhr.status})`;
               try { msg = JSON.parse(xhr.responseText).error.message_uz || msg; } catch { /* non-JSON */ }
               reject(new Error(msg));
             }
@@ -173,7 +183,9 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
                 PDF kitobni bu yerga tashlang yoki bosing
               </p>
             )}
-            <p className="mt-1 text-xs text-slate-400">Maksimal hajm: {MAX_MB} MB · 300 sahifagacha</p>
+            <p className="mt-1 text-xs text-slate-400">{limits
+              ? `Ilova limiti: ${limits.max_bytes / (1024 * 1024)} MiB · ${limits.max_pages} sahifagacha${limits.direct_upload ? "" : " · hosting limiti pastroq bo'lishi mumkin"}`
+              : "Fayl va sahifa limitlari serverda tekshiriladi."}</p>
             <input ref={inputRef} type="file" accept=".pdf,application/pdf" className="hidden"
               onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </div>
@@ -202,7 +214,7 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
           </svg>
           <div className="text-center">
             <p className="font-semibold text-slate-800 dark:text-slate-100">
-              {phase === "uploading" ? "Fayl yuklanmoqda..." : "AI kitobni tahlil qilmoqda"}
+              {phase === "uploading" ? "Fayl yuklanmoqda..." : "Kitob tahlil qilinmoqda..."}
             </p>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{stage}</p>
           </div>
