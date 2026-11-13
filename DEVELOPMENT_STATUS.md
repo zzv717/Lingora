@@ -2,6 +2,10 @@
 
 **Status: incomplete / not production-ready as a full interactive workbook.**
 
+The current branch adds a read-only geometry review prototype and a guard for
+OCR pages without detected questions; see `docs/SCANNED_TEXTBOOK_STATUS.md`.
+Grammarway 3 and browser end-to-end acceptance remain unverified.
+
 This file replaces earlier broad completion claims that were not supported by an
 end-to-end browser test. The current work is a safety and geometry milestone, not
 the requested full engine rebuild. See `docs/SCANNED_TEXTBOOK_STATUS.md` for the
@@ -63,3 +67,11 @@ configuration change restored backend health and its database readiness probe, b
 this is not proof of upload, storage access, OCR, workers, or a real user workflow.
 This branch has not been deployed. See `docs/WORKBOOK_AUDIT.md`,
 `docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/DEPLOYMENT.md` before deployment.
+
+## Annotated sample and AI check
+
+See `docs/SCANNED_TEXTBOOK_STATUS.md`: the marked screenshot OCR returned zero
+review regions in a local test, while the inspired layout regression is synthetic.
+Production reported AI unconfigured; the OCR import is not AI document
+understanding. The temporary review inputs are not saved or graded. AI guesses
+are not promoted to deterministic grading keys on this branch.

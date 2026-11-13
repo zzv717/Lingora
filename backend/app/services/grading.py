@@ -208,7 +208,7 @@ def grade_with_ai(db: Session, user_id: str, exercise: Exercise,
             "type": exercise.exercise_type,
             "prompt": q.prompt,
             "options": [{"letter": o.letter, "text": o.text} for o in q.options],
-            "key_available": list(q.correct_answers or []) or None,
+            "key_available": (list(q.correct_answers or []) or None) if q.answer_source in ("key", "manual") else None,
             "student_answer": given,
         })
     user_prompt = {
