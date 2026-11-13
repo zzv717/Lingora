@@ -36,6 +36,12 @@ const geomSource = fs.readFileSync(new URL('../src/lib/ocr-geometry.ts', import.
 const geomJs = ts.transpileModule(geomSource, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
 const geomExports = {};
 vm.runInNewContext(geomJs, { exports: geomExports });
+const columns = geomExports.previewColumns(1001, 800);
+assert.deepEqual(JSON.parse(JSON.stringify(columns)), [
+  { x: 0, y: 0, width: 500, height: 800 }, { x: 500, y: 0, width: 501, height: 800 },
+]);
+assert.deepEqual(JSON.parse(JSON.stringify(geomExports.offsetOcrBox({x0: 5, y0: 4, x1: 15, y1: 14}, 500, 0))),
+  {x0: 505, y0: 4, x1: 515, y1: 14});
 const { default: pdfjs } = await import('pdfjs-dist/legacy/build/pdf.js');
 // Minimal in-memory PDF; exercises real PDF.js page viewport transforms.
 function pdfBytes(rotation) {

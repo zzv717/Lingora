@@ -207,3 +207,29 @@ def test_visual_review_candidate_is_read_only_and_does_not_split_numbered_items(
     db.expire_all()
     page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
     assert page.needs_ocr and not page.text and not db.scalar(select(Exercise.id).where(Exercise.book_id == book))
+
+
+def test_ambiguous_columns_and_zero_marker_remain_pending(client, db):
+    h, book, _, _ = setup_scan(client, db)
+    url = f'{API}/books/{book}/ocr/pages/1'
+    payload = lines('0 Fill in the missing words.', '1. He ...... there.', '2. She ...... here.')
+    assert client.post(url + '/preview', headers=h, json=payload).status_code == 200
+    res = client.post(url, headers=h, json=payload)
+    assert res.status_code == 409 and res.json()['error']['code'] == 'OCR_LAYOUT_REVIEW_REQUIRED'
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.needs_ocr and not page.text
+    assert not db.scalar(select(Exercise.id).where(Exercise.book_id == book))
+    payload = {'lines': [
+        {'text': 'Exercise 1. Complete this text.', 'bbox': [20, 20, 260, 32]},
+        {'text': '1. She ...... there.', 'bbox': [20, 50, 260, 62]},
+        {'text': '2. He ...... there.', 'bbox': [20, 80, 260, 92]},
+        {'text': 'Right hand text here.', 'bbox': [340, 20, 580, 32]},
+        {'text': 'More right side text.', 'bbox': [340, 50, 580, 62]},
+        {'text': 'Another right side.', 'bbox': [340, 80, 580, 92]},
+        {'text': 'Table crossing both sides.', 'bbox': [260, 60, 340, 72]},
+    ]}
+    res = client.post(url, headers=h, json=payload)
+    assert res.status_code == 409 and res.json()['error']['code'] == 'OCR_LAYOUT_REVIEW_REQUIRED'
+    db.expire_all()
+    assert db.scalar(select(BookPage.needs_ocr).where(BookPage.book_id == book, BookPage.page_number == 1))

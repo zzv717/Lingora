@@ -5,11 +5,17 @@ import { ApiErr, get, getAccessToken, post } from "@/lib/api";
 import { Button } from "@/components/ui";
 import type { PDFDocumentLoadingTask } from "pdfjs-dist";
 import type { Worker } from "tesseract.js";
-import { ocrBoxToPdf } from "@/lib/ocr-geometry";
+import { ocrBoxToPdf, offsetOcrBox, previewColumns } from "@/lib/ocr-geometry";
 
 type OCRWord = { text: string; bbox: [number, number, number, number]; confidence: number };
 type OCRLine = { text: string; bbox: [number, number, number, number]; confidence: number; words: OCRWord[] };
+type AIReview = { page_number: number; provider: string; model: string; warnings: string[];
+  source_lines: { id: number; text: string; bbox: number[] }[];
+  exercises: { number: string; instruction: string; exercise_type: string; context: string;
+    source_line_ids: number[]; uncertainty: string;
+    questions: { number: string; prompt: string; source_line_ids: number[] }[] }[] };
 type Preview = { page_number: number; text: string; already_processed: boolean;
+  lines: { text: string; bbox: number[]; confidence: number | null; words: OCRWord[] }[];
   lesson: { title: string } | null; warnings: { code: string; message_uz: string }[];
   exercises: { title: string; type: string; instructions: string; geometry: unknown;
     questions: { number: string; prompt: string }[] }[];
@@ -24,6 +30,11 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
   const [error, setError] = useState("");
   const [pageInput, setPageInput] = useState("1");
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [splitColumns, setSplitColumns] = useState(false);
+  const [consentAI, setConsentAI] = useState(false);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiReview, setAiReview] = useState<AIReview | null>(null);
   const stopped = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { stopped.current = true; mounted.current = false; }; }, []);
@@ -34,6 +45,7 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
       setError(`Sahifa raqami 1–${pageCount} oralig'ida bo'lishi kerak.`); return;
     }
     stopped.current = false; setRunning(true); setError(""); setPreview(null);
+    setAiReview(null); setAiError(""); setConsentAI(false);
     let worker: Worker | undefined;
     let loading: PDFDocumentLoadingTask | undefined;
     let processed = 0, skipped = 0, exerciseCount = 0, wordCount = 0;
@@ -65,25 +77,42 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("Sahifa tasvirini yaratib bo'lmadi.");
         await page.render({ canvasContext: ctx, viewport }).promise;
-        const result = await worker.recognize(canvas, {}, { blocks: true, text: true });
+        const lines: OCRLine[] = [];
+        let exceedsLimit = false;
+        // Optional experiment is preview-only: a hard split can cut tables,
+        // illustrations and spanning text. Never use it for bulk persistence.
+        const regions = previewOnly && splitColumns
+          ? previewColumns(canvas.width, canvas.height)
+          : [{ x: 0, y: 0, width: canvas.width, height: canvas.height }];
+        for (const region of regions) {
+          if (stopped.current) break;
+          let source = canvas;
+          if (regions.length > 1) {
+            source = document.createElement("canvas");
+            source.width = region.width; source.height = region.height;
+            const context = source.getContext("2d");
+            if (!context) throw new Error("OCR ustunini yaratib bo'lmadi.");
+            context.drawImage(canvas, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+          }
+          const result = await worker.recognize(source, {}, { blocks: true, text: true });
+          if (source !== canvas) { source.width = 1; source.height = 1; }
+          for (const block of result.data.blocks || []) for (const par of block.paragraphs) for (const line of par.lines) {
+            const text = line.text.trim();
+            if (!text) continue;
+            const detectedWords = line.words.filter((word) => word.text.trim() && Number.isFinite(word.confidence));
+            if (text.length > 1000 || detectedWords.length > 200 || detectedWords.some((word) => word.text.trim().length > 200)) {
+              exceedsLimit = true; break;
+            }
+            const words = detectedWords.map((word) => ({ text: word.text.trim(),
+              bbox: ocrBoxToPdf(offsetOcrBox(word.bbox, region.x, region.y), viewport, page.view),
+              confidence: Math.max(0, Math.min(100, word.confidence)) }));
+            lines.push({ text, bbox: ocrBoxToPdf(offsetOcrBox(line.bbox, region.x, region.y), viewport, page.view),
+              confidence: Math.max(0, Math.min(100, line.confidence)), words });
+          }
+        }
         canvas.width = 1; canvas.height = 1;
         page.cleanup();
         if (stopped.current) break;
-        const lines: OCRLine[] = [];
-        let exceedsLimit = false;
-        for (const block of result.data.blocks || []) for (const par of block.paragraphs) for (const line of par.lines) {
-          const text = line.text.trim();
-          if (!text) continue;
-          const detectedWords = line.words.filter((word) => word.text.trim() && Number.isFinite(word.confidence));
-          if (text.length > 1000 || detectedWords.length > 200 || detectedWords.some((word) => word.text.trim().length > 200)) {
-            exceedsLimit = true; break;
-          }
-          const words = detectedWords.map((word) => ({ text: word.text.trim(),
-            bbox: ocrBoxToPdf(word.bbox, viewport, page.view),
-            confidence: Math.max(0, Math.min(100, word.confidence)) }));
-          lines.push({ text, bbox: ocrBoxToPdf(line.bbox, viewport, page.view),
-            confidence: Math.max(0, Math.min(100, line.confidence)), words });
-        }
         const confidence = lines.reduce((sum, line) => sum + line.confidence, 0) / Math.max(lines.length, 1);
         if (exceedsLimit || lines.length > 500 || lines.map((l) => l.text).join(" ").length < 24 || confidence < 40) {
           skipped++; skippedPages.push(number); continue;
@@ -97,7 +126,7 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
               `/books/${bookId}/ocr/pages/${number}`, { lines });
             if (!saved.already_processed) { processed++; exerciseCount += saved.exercises_added; wordCount += saved.words_added; }
           } catch (e) {
-            if (e instanceof ApiErr && ["MIXED_PAGE_REVIEW_REQUIRED", "OCR_NO_EXERCISE_REVIEW"].includes(e.code)) {
+            if (e instanceof ApiErr && ["MIXED_PAGE_REVIEW_REQUIRED", "OCR_NO_EXERCISE_REVIEW", "OCR_LAYOUT_REVIEW_REQUIRED"].includes(e.code)) {
               skipped++; skippedPages.push(number); continue;
             }
             throw e;
@@ -117,6 +146,18 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
       if (loading) await loading.destroy().catch(() => {});
       if (mounted.current) setRunning(false);
     }
+  };
+
+  const reviewWithAI = async () => {
+    if (!preview || !consentAI) return;
+    setAiRunning(true); setAiError(""); setAiReview(null);
+    try {
+      const result = await post<AIReview>(`/books/${bookId}/ocr/pages/${preview.page_number}/ai-review`,
+        { lines: preview.lines, consent_text_to_provider: true });
+      if (mounted.current) setAiReview(result);
+    } catch (e) {
+      if (mounted.current) setAiError(e instanceof Error ? e.message : "AI tahlili bajarilmadi.");
+    } finally { if (mounted.current) setAiRunning(false); }
   };
 
   return <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-800 dark:bg-amber-950/30">
@@ -147,12 +188,41 @@ export function BrowserOCR({ bookId, pageCount, pending, onUpdate }: { bookId: s
           </details>}
         </div>)}
       </details>
+      <div className="mt-4 rounded border border-indigo-200 p-3 dark:border-indigo-800">
+        <p className="font-medium">AI bilan OCR matnini sinash</p>
+        <p className="mt-1 text-xs">Faqat shu sahifaning OCR matni, ishonchlilik ko'rsatkichlari va koordinatalari sozlangan tashqi AI xizmatiga yuboriladi. PDF yoki rasmlar yuborilmaydi. Provayder ma'lumotni qayta ishlashi va to'lov olishi mumkin. AI javobi taxmin: hech narsa kitobga saqlanmaydi yoki baholanmaydi.</p>
+        <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={consentAI} disabled={aiRunning} onChange={(e) => setConsentAI(e.target.checked)} />OCR matni va koordinatalarini tashqi AI’ga yuborishga roziman.</label>
+        <Button className="mt-2" variant="secondary" size="sm" disabled={!consentAI || aiRunning || running} onClick={reviewWithAI}>{aiRunning ? "AI tahlil qilmoqda..." : "AI bilan sinash"}</Button>
+        {aiError && <p role="alert" className="mt-2 text-red-700 dark:text-red-300">{aiError}</p>}
+        {aiReview && <div className="mt-3" role="status">
+          <p className="font-medium">AI taxmini: {aiReview.exercises.length} ta mashq · {aiReview.provider} / {aiReview.model}</p>
+          <p className="text-xs text-amber-700 dark:text-amber-300">Tekshirilmagan. OCR xatolari, yetishmayotgan rasmlar va boshqa sahifalar natijaga ta'sir qiladi. Asl PDF bilan solishtiring.</p>
+          {aiReview.warnings.map((warning, i) => <p key={i} className="text-xs">{warning}</p>)}
+          {aiReview.exercises.map((ex, i) => <div key={i} className="mt-3 border-t border-slate-200 pt-2 dark:border-slate-700">
+            <p className="font-medium">Mashq {ex.number || "raqami noma'lum"} · {ex.exercise_type} · {ex.questions.length} savol</p>
+            <p>{ex.instruction}</p>{ex.context && <p className="mt-1 whitespace-pre-wrap">{ex.context}</p>}
+            {ex.uncertainty && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Noaniqlik: {ex.uncertainty}</p>}
+            <details className="mt-1 text-xs"><summary>AI ko'rsatgan OCR satrlari</summary>
+              {aiReview.source_lines.filter((line) => ex.source_line_ids.includes(line.id)).map((line) => <p key={line.id}>{line.id}: {line.text}</p>)}
+            </details>
+            {ex.questions.map((q, j) => <div key={j} className="my-2 rounded border border-slate-200 p-2 dark:border-slate-700">
+              <p>{q.number ? `${q.number}. ` : ""}{q.prompt}</p>
+              <details className="text-xs"><summary>Manba satrlari</summary>{aiReview.source_lines.filter((line) => q.source_line_ids.includes(line.id)).map((line) => <p key={line.id}>{line.id}: {line.text}</p>)}</details>
+              <label className="mt-1 block text-xs">Vaqtinchalik javob (saqlanmaydi va tekshirilmaydi)<textarea rows={2} className="mt-1 block w-full rounded border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-800" /></label>
+            </div>)}
+          </div>)}
+        </div>}
+      </div>
       <details className="mt-2"><summary>OCR matni</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{preview.text}</pre></details>
       {!!preview.warnings.length && <details className="mt-2"><summary>Ogohlantirishlar</summary><ul>{preview.warnings.map((w, i) => <li key={i}>{w.message_uz}</li>)}</ul></details>}
     </div>}
+    <label className="mt-3 flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
+      <input type="checkbox" checked={splitColumns} disabled={running} onChange={(e) => setSplitColumns(e.target.checked)} />
+      <span>Faqat saqlamasdan sinashda ikki ustunni alohida o'qish (jadval yoki rasmlarni bo'lib yuborishi mumkin; asl sahifa bilan tekshiring).</span>
+    </label>
     <div className="mt-3 flex flex-wrap items-center gap-2">{running ? <Button variant="secondary" size="sm" onClick={() => { stopped.current = true; setStatus("Joriy sahifa tugagach to'xtaydi..."); }}>To'xtatish</Button> : <>
       <label>Sahifa <input aria-label="OCR sinov sahifasi" type="number" min={1} max={pageCount} value={pageInput} onChange={(e) => setPageInput(e.target.value)} className="w-20 rounded border border-slate-300 bg-white px-2 py-1 dark:bg-slate-800" /></label>
-      <Button variant="secondary" size="sm" disabled={!pageCount} onClick={() => start(true)}>Sahifani saqlamasdan sinash</Button>
-      <Button size="sm" disabled={!pending} onClick={() => start(false)}>Bepul OCRni saqlash</Button></>}</div>
+      <Button variant="secondary" size="sm" disabled={!pageCount || aiRunning} onClick={() => start(true)}>Sahifani saqlamasdan sinash</Button>
+      <Button size="sm" disabled={!pending || aiRunning} onClick={() => start(false)}>Bepul OCRni saqlash</Button></>}</div>
   </div>;
 }

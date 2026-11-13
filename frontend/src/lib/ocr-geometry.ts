@@ -1,3 +1,12 @@
+export function previewColumns(width: number, height: number) {
+  const mid = Math.floor(width / 2);
+  return [{ x: 0, y: 0, width: mid, height }, { x: mid, y: 0, width: width - mid, height }];
+}
+
+export function offsetOcrBox(box: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number) {
+  return { x0: box.x0 + x, y0: box.y0 + y, x1: box.x1 + x, y1: box.y1 + y };
+}
+
 /** Convert canvas coordinates to unrotated, crop-relative PDF points (top-left origin). */
 export function ocrBoxToPdf(
   box: { x0: number; y0: number; x1: number; y1: number },

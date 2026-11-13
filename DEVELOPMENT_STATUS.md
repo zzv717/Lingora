@@ -4,7 +4,7 @@
 
 The current branch adds a read-only geometry review prototype and a guard for
 OCR pages without detected questions; see `docs/SCANNED_TEXTBOOK_STATUS.md`.
-Grammarway 3 and browser end-to-end acceptance remain unverified.
+Real Grammarway 3 and Round-Up page samples were locally audited; Grammarway detection failed on all five requested pages. Browser end-to-end acceptance remains unverified.
 
 This file replaces earlier broad completion claims that were not supported by an
 end-to-end browser test. The current work is a safety and geometry milestone, not
@@ -37,6 +37,18 @@ current scanned textbook work and its verification limits.
   smoke through a local Next proxy and local FastAPI: 13 checks passed; this was
   not browser E2E, real storage, or a real textbook.
 
+## Experimental text-only AI OCR preview
+
+A consent-based, page-local AI review is implemented on this branch, but live AI
+provider configuration and real-book AI acceptance remain untested. No page images
+are sent. See `docs/SCANNED_TEXTBOOK_STATUS.md` for limitations.
+
+## Vision AI tutor milestone
+
+See `docs/AI_TUTOR_VISION_AUDIT.md`. A bounded consent-based Vision mapping and
+topic preview has been added, not a full mapping-first pipeline or tutor. Real
+AI/provider acceptance and durable, persistent topic analysis are not complete.
+
 ## Important remaining work
 
 - Browser and real-device E2E for overlay position, edits, focus, zoom, rotation,
@@ -62,9 +74,8 @@ current scanned textbook work and its verification limits.
 ## Deployment
 
 This branch does not require a schema migration; page-type inference is not
-persisted. A previous production environment
-configuration change restored backend health and its database readiness probe, but
-this is not proof of upload, storage access, OCR, workers, or a real user workflow.
+persisted. Authorized production direct-upload configuration was deployed with a
+50 MiB limit, but authenticated uploads and near-limit TUS remain untested.
 This branch has not been deployed. See `docs/WORKBOOK_AUDIT.md`,
 `docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/DEPLOYMENT.md` before deployment.
 

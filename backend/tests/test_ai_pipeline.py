@@ -76,3 +76,27 @@ def test_pipeline_reports_failed_ai_but_keeps_basic_analysis(client, monkeypatch
     job = wait_for_book(client, h, r.json()["id"])
     assert job["status"] == "completed", job
     assert any(w["code"] == "AI_ENRICHMENT_FAILED" for w in job["warnings"])
+
+
+def test_gemini_vision_json_mode_payload(monkeypatch):
+    monkeypatch.setattr(settings, 'ai_api_key', 'test-key')
+    monkeypatch.setattr(settings, 'ai_model', 'default-model')
+    captured = {}
+    class FakeClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json, headers):
+            captured.update(url=url, payload=json, headers=headers)
+            return httpx.Response(200, request=httpx.Request('POST', url), json={
+                'candidates': [{'content': {'parts': [{'text': '{"topics": []}'}]}}],
+                'usageMetadata': {'promptTokenCount': 5, 'candidatesTokenCount': 3}})
+    monkeypatch.setattr(httpx, 'Client', FakeClient)
+    result = GeminiProvider().complete([ChatMessage(role='system', content='system'),
+        ChatMessage(role='user', content='page 2', images=[{'mime_type': 'image/png', 'data_base64': 'dGVzdA=='}])],
+        model='vision-model', json_mode=True)
+    assert result.content == '{"topics": []}' and result.model == 'vision-model'
+    payload = captured['payload']
+    assert payload['generationConfig']['responseMimeType'] == 'application/json'
+    assert payload['contents'][0]['parts'][1]['inline_data']['mime_type'] == 'image/png'
+    assert captured['headers']['x-goog-api-key'] == 'test-key'

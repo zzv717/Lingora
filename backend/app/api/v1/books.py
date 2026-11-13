@@ -32,7 +32,7 @@ from app.models import (
     User,
     VocabularyWord,
 )
-from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn
+from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionMapPreviewIn, VisionTopicPreviewIn
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
@@ -49,6 +49,14 @@ def _check_book_quota(db: Session, user: User) -> None:
     n_books = int(db.scalar(select(func.count(Book.id)).where(Book.user_id == user.id)) or 0)
     if n_books >= plan["max_books"]:
         raise ApiError("PLAN_LIMIT", f"Rejangiz bo'yicha ko'pi bilan {plan['max_books']} ta kitob yuklash mumkin.", 403)
+
+
+@router.get("/upload/limits")
+def upload_limits(user: User = Depends(get_current_user)):
+    """Expose configured limits, not a promise about proxy/storage availability."""
+    return {"max_bytes": settings.upload_max_mb * 1024 * 1024,
+            "max_pages": settings.max_pages,
+            "direct_upload": settings.storage_backend == "supabase" and settings.supabase_direct_upload_enabled}
 
 
 @router.post("/upload/prepare")
@@ -350,6 +358,40 @@ def get_page(book_id: str, page_number: int, db: Session = Depends(get_db),
     )
 
 
+@router.post("/{book_id}/vision-map/preview")
+def preview_vision_map(book_id: str, data: VisionMapPreviewIn, request: Request,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """One bounded, opt-in vision sample; no saved book structure or learning data."""
+    limit(request, "vision_map_preview", 15, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmlarini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    pages = data.page_numbers
+    if len(set(pages)) != len(pages) or any(n < 1 or n > book.page_count for n in pages):
+        raise ApiError("INVALID_PAGE_SELECTION", "Takrorlanmagan va kitob oralig'idagi PDF sahifa raqamlarini tanlang.", 422)
+    from app.services.ai.vision_map import preview_map
+    return preview_map(db, user.id, book, sorted(pages))
+
+
+@router.post("/{book_id}/vision-topic/preview")
+def preview_vision_topic(book_id: str, data: VisionTopicPreviewIn, request: Request,
+                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Preview selected page images, including shared cross-page exercise context."""
+    limit(request, "vision_topic_preview", 15, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmlarini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    pages = data.page_numbers
+    if len(set(pages)) != len(pages) or any(n < 1 or n > book.page_count for n in pages):
+        raise ApiError("INVALID_PAGE_SELECTION", "Takrorlanmagan va kitob oralig'idagi PDF sahifa raqamlarini tanlang.", 422)
+    from app.services.ai.vision_topic import preview_topic
+    return preview_topic(db, user.id, book, sorted(pages), data.topic)
+
+
 @router.get("/{book_id}/ocr/pending")
 def ocr_pending(book_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Return page numbers only; OCR itself runs in the user's browser."""
@@ -390,7 +432,7 @@ def _prepare_ocr(page: BookPage, data: OCRPageIn):
         structure.warnings.append({"page": page.page_number, "code": "OCR_LAYOUT_REVIEW",
             "message_uz": ("Ikki ustun taxmin qilindi; o'qish tartibini tekshiring." if layout == "two_columns"
                             else "Sahifa ustun yoki jadval bo'lishi mumkin; o'qish tartibini tekshiring.")})
-    return lines, text, structure
+    return lines, text, structure, layout
 
 
 def _ocr_geometry(page: BookPage, bbox, lines):
@@ -418,7 +460,7 @@ def preview_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request
     page = db.scalar(select(BookPage).where(BookPage.book_id == book.id, BookPage.page_number == page_number))
     if not page:
         raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
-    lines, text, structure = _prepare_ocr(page, data)
+    lines, text, structure, _layout = _prepare_ocr(page, data)
     from app.services.layout_review import visual_candidates
     layout_review = visual_candidates(lines, page.width, page.height, page.images)
     lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
@@ -431,6 +473,24 @@ def preview_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request
                 "geometry": _ocr_geometry(page, ex.bbox, lines), "needs_review": True,
                 "questions": [{"number": q.number, "prompt": q.prompt} for q in ex.questions]}
                 for ex in structure.exercises], "warnings": structure.warnings}
+
+
+@router.post("/{book_id}/ocr/pages/{page_number}/ai-review")
+def ai_review_browser_ocr(book_id: str, page_number: int, data: OCRAIReviewIn, request: Request,
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Explicit text-only AI review, one page at a time; no book content writes."""
+    limit(request, "ocr_ai_review", 30, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tahlili hali yakunlanmagan.", 409)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book.id, BookPage.page_number == page_number))
+    if not page:
+        raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
+    if not data.consent_text_to_provider:
+        raise ApiError("AI_CONSENT_REQUIRED", "OCR matnini tashqi AI xizmatiga yuborishga rozilik kerak.", 422)
+    lines, _, _, _ = _prepare_ocr(page, data)
+    from app.services.ai.ocr_review import review_page
+    return review_page(db, user.id, page_number, page.width, page.height, lines)
 
 
 @router.post("/{book_id}/ocr/pages/{page_number}")
@@ -451,7 +511,11 @@ def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: R
         return {"already_processed": True, "exercises_added": 0, "words_added": 0}
     if page.text.strip():
         raise ApiError("MIXED_PAGE_REVIEW_REQUIRED", "Sahifada avvalgi matn mavjud; uni almashtirmaslik uchun faqat OCR sinovidan foydalaning.", 409)
-    lines, text, structure = _prepare_ocr(page, data)
+    lines, text, structure, layout = _prepare_ocr(page, data)
+    if layout == "ambiguous" or any(ex.ref == "Exercise 0" for ex in structure.exercises):
+        # Real scanned pages can merge text from columns or misread a marker as
+        # zero. Completing such a page would lock in partial or false exercises.
+        raise ApiError("OCR_LAYOUT_REVIEW_REQUIRED", "Sahifa tuzilishi noaniq; saqlanmadi, avval ko'rib chiqing.", 409)
     if not any(ex.questions for ex in structure.exercises):
         # Do not mark a page complete merely because OCR produced text: it may
         # contain an unrecognized exercise. Preview remains available and read-only.

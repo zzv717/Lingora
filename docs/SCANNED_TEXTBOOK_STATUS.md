@@ -123,3 +123,83 @@ page images. This branch also prevents AI-generated or other unverified answers
 from being scored as verified keys; without an available AI evaluation, their
 responses remain ungraded. No provider was configured, paid service invoked,
 or production database mutated by this investigation.
+
+## Real-book local audit, 2026-11-11 (supersedes earlier source-availability statements)
+
+The permitted Grammarway 3 and Round-Up 1 PDFs were obtained from the user's
+Drive and processed locally; sampled pages have no text layer. No page images
+were sent to AI. Each listed number is a **one-based PDF index**, matching the
+printed page labels for Grammarway. Tesseract.js English OCR was run in Node on
+rendered full pages (Grammarway 1846×2400; Round-Up about 1030×1530). Its line
+boxes were scaled to PDF points and passed through the actual `_prepare_ocr` and
+`visual_candidates` functions. This approximates browser OCR but is not a
+browser E2E test; it did not submit or save the production book.
+
+| Book, PDF page | Visually observed activities | Import detector output | Review candidates | Layout |
+|---|---|---|---|---|
+| Grammarway 7 | 5 (1–5) | 0 | 0 | ambiguous |
+| Grammarway 8 | 5 (6–10) | 0 | 0 | ambiguous |
+| Grammarway 9 | 1 (11) | 0 | 0 | original |
+| Grammarway 16 | 4 (27–30) | 0 | 0 | ambiguous |
+| Grammarway 17 | 2 numbered (31–32) plus oral and writing | 0 | 0 | ambiguous |
+| Round-Up 7 | not established | 0 | 0 | original |
+| Round-Up 8 | not established | 0 | 0 | original |
+| Round-Up 16 | at least 3 visually observed | 1 false `Exercise 0`, 11 fill-blank questions | 2 false `0` | original |
+
+The real page 8 exercise 9 contains one ten-blank passage; neither pipeline
+recognized it. Grouping, type and checking therefore fail acceptance, rather
+than producing ten separate exercises. The full-page OCR often merges columns;
+circled exercise numbers are frequently missed or misread. Three-column lists
+can also become one OCR line. The visual ground truth counts are not detector
+results and Round-Up was sampled, not fully audited.
+
+A separate local experiment OCR'd left and right halves at the same scale. It
+produced cleaner instructions on some pages, but the actual detector still
+returned no useful grouping: 0 exercises on Grammarway 7–9 and 16; on 17 it
+returned two unnumbered fill-blank candidates, one with one question and one
+with none. The visual review returned zero candidates on all five. Therefore a
+preview-only manual two-column option has been added, with a warning: midpoint
+splitting can cut spanning text, tables and illustrations and is not a general
+layout solution. It is never used by bulk import. A separate offline color
+experiment found most green exercise-number markers on these five pages, but it
+is book-style dependent, missed/misclassified some markers, and is not shipped.
+
+The import API now rejects detected ambiguous layouts and `Exercise 0`, leaving
+the page pending; this is a conservative guard, **not** proof other imports
+are complete. It also defers legitimate pages. No versioned reanalysis or safe
+reconciliation exists, so do not bulk-import real books. Neither a complete
+interactive conversion nor real-browser, live PostgreSQL, live authenticated
+upload or near-50 MiB TUS E2E has been demonstrated.
+
+Production settings were authorized separately: 50 MiB private bucket cap,
+public Storage key and direct upload flag; deployment `dpl_HuwHA5vvXXDV92c1HXfa8NWSP9sd`
+is READY/PROMOTED with production alias assigned. This branch's UI now requests
+server limits instead of advertising a fixed 100 MB, and explains 413 errors;
+these code changes are not deployed. Real authenticated direct TUS remains
+untested. No book content, answers or progress was altered during this audit.
+
+## Text-only AI OCR review (unmerged branch experiment)
+
+The authenticated page preview now offers an additional opt-in, single-page AI
+review. It sends the selected OCR line text, line confidence and PDF point
+coordinates to the configured AI provider, but never PDF/page images. It does
+not depend on the heuristic finding an exercise first. The model is instructed
+to cite line IDs, retain shared passage context, distinguish theory from
+activities and avoid invented keys; JSON and references are validated. Valid
+references do not guarantee the model's text or grouping is correct. The user
+can inspect referenced OCR lines and temporary inputs, compare with the original
+PDF, and see uncertainty. No page, exercise, answer or progress is persisted;
+an AI usage event is recorded. Bad responses and unavailable providers show errors
+instead of silently falling back. It is not bulk OCR, a grading or verified
+answer-key pipeline, and it only sees one page.
+
+The AI tests use a mocked provider; the 10-question example is synthetic. They
+check text-only messages, consent, ownership, quotas, invalid output/references,
+and preservation of book data. The current production `AI_PROVIDER`, `AI_MODEL`
+and `AI_API_KEY` are not configured; preview-only variables exist, but their
+validity is not established. No real model call or AI detection result on
+Grammarway or Round-Up is established. A real provider and an isolated end-to-end
+comparison against actual page 8 exercise 9 and the other sampled pages are still
+required before claiming effectiveness. Enabling the existing AI settings for
+production may also enable other AI features and incur provider charges; do not
+copy preview settings without considering that scope.

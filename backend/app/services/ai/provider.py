@@ -186,6 +186,8 @@ class GeminiProvider(AIProvider):
         }
         if system_parts:
             payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+        if json_mode:
+            payload["generationConfig"]["responseMimeType"] = "application/json"
         start = time.monotonic()
         last_err: Exception | None = None
         for attempt in range(settings.ai_max_retries + 1):
