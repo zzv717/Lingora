@@ -84,7 +84,7 @@ export default function BookDetailPage() {
                 <Badge tone="brand">{cov.exercises} mashq</Badge>
                 <Badge tone="blue">{cov.questions} savol</Badge>
                 <Badge tone="green">
-                  {cov.questions_with_key}/{cov.questions} savol kaliti bor
+                  {cov.questions_with_key}/{cov.questions} savol kaliti aniqlangan (tekshirish kerak)
                 </Badge>
                 <Badge tone="amber">{cov.vocabulary} lug'at so'zi</Badge>
                 {cov.pages_ocr_used > 0 && <Badge tone="slate">{cov.pages_ocr_used} sahifa OCR</Badge>}

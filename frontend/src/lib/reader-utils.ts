@@ -11,7 +11,7 @@ export function overlayRect(b: [number, number, number, number], g: PageGeometry
   };
   const points = [rotate(b[0], b[1]), rotate(b[2], b[1]), rotate(b[0], b[3]), rotate(b[2], b[3])];
   const xs = points.map((p) => p[0] * g.scale), ys = points.map((p) => p[1] * g.scale);
-  return { left: Math.min(...xs), top: Math.min(...ys), width: Math.max(48, Math.max(...xs) - Math.min(...xs)), height: Math.max(26, Math.max(...ys) - Math.min(...ys)) };
+  return { left: Math.min(...xs), top: Math.min(...ys), width: Math.max(1, Math.max(...xs) - Math.min(...xs)), height: Math.max(1, Math.max(...ys) - Math.min(...ys)) };
 }
 
 export function fitScale(width: number, height: number, pageWidth: number, pageHeight: number, zoom: number) {
@@ -26,4 +26,9 @@ export function chooseLesson<T extends { id: string }>(lessons: T[], progress: R
   }
   return [...open].filter((l) => progress[l.id]?.last_visited_at)
     .sort((a, b) => (progress[b.id].last_visited_at || "").localeCompare(progress[a.id].last_visited_at || ""))[0] || open[0];
+}
+
+/** Legacy proportional boxes are not safe to overlay; preserve their answers in cards. */
+export function trustedBlank(b: { bbox: number[] | null; geometry?: string }): boolean {
+  return (b.geometry === "native_chars" || b.geometry === "manual") && !!b.bbox && b.bbox.length === 4 && b.bbox.every(Number.isFinite);
 }

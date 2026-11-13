@@ -130,7 +130,7 @@ export function PdfViewer({ bookId, pageNumber, onPageCount, onGoTo, overlays = 
         {rendering && !error && <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-200/50 dark:bg-slate-800/50"><Spinner className="h-8 w-8 text-brand-500" /></div>}
         <div className="relative mx-auto w-fit shadow-lg">
           <canvas ref={canvasRef} className="block rounded-md bg-white" />
-          {geometry && overlays.map((o) => <input key={o.id} value={o.value} onChange={(e) => o.onChange(e.target.value)} placeholder="…" autoComplete="off" className={`blank-input ${o.state === "correct" ? "!border-emerald-500 !bg-emerald-50 dark:!bg-emerald-900/60" : o.state === "wrong" ? "!border-red-500 !bg-red-50 dark:!bg-red-900/60" : ""}`} style={overlayRect(o.bbox, geometry)} />)}
+          {geometry && overlays.map((o) => <input key={o.id} aria-label="Mashq javobi" value={o.value} onChange={(e) => o.onChange(e.target.value)} placeholder="…" autoComplete="off" className={`blank-input ${o.state === "correct" ? "!border-emerald-500 !bg-emerald-50 dark:!bg-emerald-900/60" : o.state === "wrong" ? "!border-red-500 !bg-red-50 dark:!bg-red-900/60" : ""}`} style={overlayRect(o.bbox, geometry)} />)}
         </div>
       </div>
     </div>

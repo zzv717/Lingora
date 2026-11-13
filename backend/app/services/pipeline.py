@@ -3,16 +3,19 @@ persist -> optional AI enrichment -> validate -> ready.
 
 Progress is tracked on the processing_jobs table so users see live status in Uzbek.
 Failures are explicit and surfaced; nothing is silently skipped.
-Re-analysis prepares new structure safely before swapping active entities,
-preserving existing student answers and progress.
+Existing content cannot be re-analyzed until staged versions and answer migration exist.
+First-pass content persistence is atomic; progress reporting outside it is separate.
 """
 import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.errors import ApiError
+from app.services.content_integrity import has_book_content
 from app.models import (
     AnswerKey,
     Book,
@@ -48,12 +51,13 @@ class Pipeline:
         self.db = db
         self.job = job
 
-    def progress(self, value: float, stage: str) -> None:
+    def progress(self, value: float, stage: str, *, commit: bool = True) -> None:
         stage_label = dict(STAGES).get(stage, stage)
         self.job.progress = round(min(max(value, 0.0), 100.0), 1)
         self.job.stage = stage
         self.job.stage_label_uz = stage_label
-        self.db.commit()
+        if commit:
+            self.db.commit()
 
     def run(self) -> None:
         book = self.db.get(Book, self.job.book_id)
@@ -62,11 +66,12 @@ class Pipeline:
             self._run(book)
         except Exception as e:
             log.exception("Pipeline failed for book %s", book.id)
+            self.db.rollback()
             self.job.status = "failed"
             self.job.error_code = getattr(e, "code", "") or "PIPELINE_ERROR"
             self.job.error_message = getattr(e, "message_uz", "") or str(e)
             self.job.finished_at = datetime.now(timezone.utc)
-            book.status = "failed"
+            book.status = "ready" if has_book_content(self.db, book.id) else "failed"
             self.db.commit()
 
     def _run(self, book: Book) -> None:
@@ -109,12 +114,11 @@ class Pipeline:
                 seen_warn.add(k)
                 deduped_warn.append(w)
 
-        # Safe transaction: now that extraction and structure detection succeeded,
-        # clean previous book pages/structure and persist new ones atomically.
-        for model in (BookPage, Chapter, Lesson, Exercise, VocabularyWord, AnswerKey):
-            for row in self.db.query(model).filter(model.book_id == book.id).all():
-                self.db.delete(row)
-        self.db.flush()
+        # Never replace active content until versioned staging and answer migration exist.
+        # Lock and check again at the write boundary, including duplicate workers.
+        self.db.scalar(select(Book).where(Book.id == book.id).with_for_update())
+        if has_book_content(self.db, book.id):
+            raise ApiError("REANALYZE_UNSAFE", "Mavjud kitob ma'lumotlarini saqlash uchun qayta tahlil to'xtatildi.", 409)
 
         for p in pages:
             self.db.add(BookPage(
@@ -147,7 +151,7 @@ class Pipeline:
             lesson_rows.append(row)
         self.db.flush()
 
-        self.progress(45, "exercises")
+        self.progress(45, "exercises", commit=False)
         # ---- persist exercises & questions ----
         for ex in structure.exercises:
             matching_lesson = next((l for l in lesson_rows if l.page_start <= ex.page_number <= l.page_end), None)
@@ -181,7 +185,7 @@ class Pipeline:
                         is_correct=opt.get("is_correct"),
                     ))
 
-        self.progress(65, "vocabulary")
+        self.progress(65, "vocabulary", commit=False)
         # ---- persist vocabulary ----
         seen_terms = set()
         for v in structure.vocabulary:
@@ -203,7 +207,7 @@ class Pipeline:
 
         # ---- record answer key pages ----
         for ak in structure.answer_key_entries:
-            self.db.add(AnswerKey(book_id=book.id, page_number=ak["page"], source="book", verified=True))
+            self.db.add(AnswerKey(book_id=book.id, page_number=ak["page"], source="book", verified=False))
 
         self.db.commit()
 

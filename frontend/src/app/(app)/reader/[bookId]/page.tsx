@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { get, post } from "@/lib/api";
-import { chooseLesson } from "@/lib/reader-utils";
+import { trustedBlank, chooseLesson } from "@/lib/reader-utils";
 import type { Exercise, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
 import { Button, Card, Spinner, useToast } from "@/components/ui";
 import { PdfViewer, type BlankOverlay } from "@/components/reader/pdf-viewer";
@@ -121,7 +121,7 @@ function ReaderInner() {
       if (ex.page_number !== page || ex.exercise_type !== "fill_blank") continue;
       for (const q of ex.questions) {
         q.blanks.forEach((b, bi) => {
-          if (!b.bbox) return;
+          if (!trustedBlank(b)) return;
           const key = `${q.id}:${b.id || bi}`;
           out.push({
             id: key,

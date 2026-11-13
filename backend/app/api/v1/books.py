@@ -35,6 +35,7 @@ from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, J
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
+from app.services.content_integrity import has_book_content
 
 log = logging.getLogger("lingora.books")
 router = APIRouter(prefix="/books", tags=["books"])
@@ -236,10 +237,10 @@ def reanalyze(book_id: str, request: Request, db: Session = Depends(get_db),
     db.scalar(select(Book).where(Book.id == book.id).with_for_update())
     if book.status == "uploading":
         raise ApiError("UPLOAD_INCOMPLETE", "Fayl hali tekshirilmagan.", 409)
-    if db.scalar(select(BookPage.id).where(BookPage.book_id == book.id, BookPage.ocr_used.is_(True)).limit(1)):
-        raise ApiError("OCR_REANALYZE_UNSAFE", "Qayta tahlil OCR natijalari va javoblarni o'chirishi mumkin. Bu kitob uchun o'chirilgan.", 409)
     if book.status == "processing":
         raise ApiError("ALREADY_PROCESSING", "Kitob hozir tahlil qilinmoqda.", 409)
+    if has_book_content(db, book.id):
+        raise ApiError("REANALYZE_UNSAFE", "Qayta tahlil mavjud javoblar va progressni o'chirishi mumkin; xavfsiz qayta tahlil hali mavjud emas.", 409)
     job = ProcessingJob(book_id=book.id, user_id=user.id, status="queued",
                         stage_label_uz="Navbatda...")
     db.add(job)
@@ -301,7 +302,7 @@ def book_structure(book_id: str, db: Session = Depends(get_db), user: User = Dep
         select(func.count(ExerciseQuestion.id))
         .join(Exercise, Exercise.id == ExerciseQuestion.exercise_id)
         .where(Exercise.book_id == book.id,
-               ExerciseQuestion.answer_source.in_(["key", "ai"]))) or 0)
+               ExerciseQuestion.answer_source == "key")) or 0)
     ocr_pages = int(db.query(BookPage.id).filter(BookPage.book_id == book.id,
                                                  BookPage.ocr_used.is_(True)).count())
     warn_pages = int(db.query(BookPage.id).filter(BookPage.book_id == book.id,

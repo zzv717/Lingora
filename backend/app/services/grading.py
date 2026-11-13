@@ -101,13 +101,14 @@ def grade_question_deterministic(q: ExerciseQuestion, answer: dict) -> tuple[boo
         if accepted:
             acc = normalize(accepted[0])
             if acc in true_tokens or acc in false_tokens:
-                return ((given in true_tokens) == (acc in true_tokens)), given
+                return (given in true_tokens | false_tokens and
+                        (given in true_tokens) == (acc in true_tokens)), given
         if given in true_tokens or given in false_tokens:
             return None, given  # no key: cannot know the expected truth value
         return None, given
     if etype == "matching":
         # OCR pair extraction is a guess, not an answer key.
-        if q.exercise.detection == "ocr":
+        if q.exercise.detection in ("rule", "ocr") and q.answer_source != "manual":
             return None, str(answer.get("pairs") or {})
         pairs = q.matching_pairs or []
         given_pairs = answer.get("pairs") or {}
@@ -134,7 +135,7 @@ def grade_question_deterministic(q: ExerciseQuestion, answer: dict) -> tuple[boo
             # one combined key answer ("is reading") for several blanks -> split by words
             words = normalize(accepted[0]).split()
             if len(words) == len(blanks):
-                ok = all(answers_match(g, [w]) for g, w in zip(given_values, words) if g) and any_given
+                ok = all(g and answers_match(g, [w]) for g, w in zip(given_values, words))
                 return (ok and any_given), str(given_blanks)
             ok = answers_match(" ".join(given_values), accepted)
             return (ok and any_given), str(given_blanks)
@@ -153,7 +154,7 @@ def grade_question_deterministic(q: ExerciseQuestion, answer: dict) -> tuple[boo
     if etype in ("sentence_construction",):
         given = answer.get("text") or ""
         if accepted:
-            return answers_match(given, accepted, keep_letters_only=False) or None, given
+            return answers_match(given, accepted, keep_letters_only=False), given
         return None, given
     # translation / writing / reading_comprehension open answers: need AI (or key)
     given = answer.get("text") or ""

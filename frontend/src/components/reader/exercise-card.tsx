@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { get, post, put } from "@/lib/api";
 import type { CheckResult, Exercise, Verdict } from "@/lib/types";
+import { trustedBlank } from "@/lib/reader-utils";
 import { Badge, Button, Card, Spinner, useToast } from "@/components/ui";
 
 export type FbValues = Record<string, Record<string, string>>;
@@ -39,6 +40,8 @@ export function ExerciseCard({
   const [open, setOpen] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const saveVersion = useRef(0);
 
   // load saved answers from server
   useEffect(() => {
@@ -72,6 +75,32 @@ export function ExerciseCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exercise.id]);
 
+  // Serialize writes so a slower old autosave cannot overwrite a newer answer.
+  const enqueueSave = useCallback((newAnswers: Record<string, Record<string, unknown>>, submit: boolean) => {
+    const payload = Object.entries(newAnswers).map(([question_id, content]) => ({ question_id, content }));
+    const pending = saveQueue.current.catch(() => {}).then(() =>
+      put(`/exercises/${exercise.id}/answers`, { answers: payload, submit }));
+    saveQueue.current = pending;
+    return pending;
+  }, [exercise.id]);
+
+  const triggerAutosave = useCallback((newAnswers: Record<string, Record<string, unknown>>) => {
+    const version = ++saveVersion.current;
+    setSavedStatus("saving");
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(async () => {
+      try {
+        await enqueueSave(newAnswers, false);
+        if (version === saveVersion.current) setSavedStatus("saved");
+      } catch {
+        if (version === saveVersion.current) {
+          setSavedStatus("clean");
+          toast("Javob saqlanmadi. Internetni tekshiring va qayta urinib ko'ring.", "error");
+        }
+      }
+    }, 700);
+  }, [enqueueSave, toast]);
+
   // sync fill_blank changes coming from PDF viewer overlays
   useEffect(() => {
     if (!fbValues) return;
@@ -95,30 +124,10 @@ export function ExerciseCard({
           }
         }
       }
+      if (changed) triggerAutosave(next);
       return changed ? next : prev;
     });
-  }, [fbValues, exercise.questions]);
-
-  // debounced autosave
-  const triggerAutosave = useCallback(
-    (newAnswers: Record<string, Record<string, unknown>>) => {
-      setSavedStatus("saving");
-      if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
-      autosaveTimer.current = setTimeout(async () => {
-        try {
-          const payload = Object.entries(newAnswers).map(([qid, content]) => ({
-            question_id: qid,
-            content,
-          }));
-          await put(`/exercises/${exercise.id}/answers`, { answers: payload, submit: false });
-          setSavedStatus("saved");
-        } catch {
-          setSavedStatus("clean");
-        }
-      }, 700);
-    },
-    [exercise.id]
-  );
+  }, [fbValues, exercise.questions, triggerAutosave]);
 
   const updateAnswer = (qid: string, content: Record<string, unknown>) => {
     // Clear stale grading result when student edits answer
@@ -133,12 +142,10 @@ export function ExerciseCard({
   const check = async () => {
     setChecking(true);
     try {
-      // flush any pending autosave first
-      const payload = Object.entries(answers).map(([qid, content]) => ({
-        question_id: qid,
-        content,
-      }));
-      await put(`/exercises/${exercise.id}/answers`, { answers: payload, submit: true });
+      // Flush after older writes and cancel any delayed stale snapshot.
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+      ++saveVersion.current;
+      await enqueueSave(answers, true);
 
       const res = await post<CheckResult>(`/exercises/${exercise.id}/check`);
       setResult(res);
@@ -293,45 +300,31 @@ function QuestionView({
   }, [exercise.exercise_type, q.matching_pairs]);
 
   if (exercise.exercise_type === "fill_blank") {
-    const hasBbox = q.blanks.some((b) => b.bbox);
+    const hasBbox = q.blanks.some(trustedBlank);
+    const unlocated = q.blanks.some((b) => !trustedBlank(b));
     const blanksDict = (answer.blanks as Record<string, string>) || {};
-    if (hasBbox) {
-      return (
-        <div className="text-sm">
-          <p className="font-medium text-slate-700 dark:text-slate-200">
-            {q.number || index + 1}. {renderPrompt(q.prompt)}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
-            ⬆ Javoblarni sahifadagi bo'sh joylarga yozing.
-          </p>
-          {verdict && !verdict.correct && verdict.expected && (
-            <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-400">To'g'ri javob: {verdict.expected}</p>
-          )}
-          {Object.keys(blanksDict).length === 0 && (
-            <p className="mt-1 text-xs text-amber-500">Hali to'ldirilmagan</p>
-          )}
-        </div>
-      );
-    }
     return (
       <div className="text-sm">
         <p className="mb-1.5 font-medium text-slate-700 dark:text-slate-200">
           {q.number || index + 1}. {renderPrompt(q.prompt)}
         </p>
+        {hasBbox && <p className="mt-1 text-xs text-slate-400">⬆ Aniq joylashgan javoblarni sahifaga yozing.</p>}
+        {unlocated && <p className="mt-1 text-xs text-amber-600">Ba'zi joylar aniq topilmadi. Javobni quyida kiriting.</p>}
         <div className="flex flex-wrap gap-2">
-          {q.blanks.map((b, bi) => (
+          {q.blanks.map((b, bi) => !trustedBlank(b) && (
             <input
               key={b.id || bi}
               value={blanksDict[b.id || `b${bi + 1}`] || ""}
               onChange={(e) => onChange({ blanks: { ...blanksDict, [b.id || `b${bi + 1}`]: e.target.value } })}
               placeholder={`${bi + 1}-bo'sh joy`}
+              aria-label={`${q.number || index + 1}-savol, ${bi + 1}-bo'sh joy`}
               className={`w-40 rounded-lg border px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-brand-500/30 dark:bg-slate-800 dark:text-white ${
                 state === "correct" ? "border-emerald-400" : state === "wrong" ? "border-red-400" : "border-slate-300 dark:border-slate-600"
               }`}
             />
           ))}
         </div>
-        {verdict && !verdict.correct && verdict.expected && (
+        {verdict?.correct === false && verdict.expected && (
           <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-400">To'g'ri javob: {verdict.expected}</p>
         )}
       </div>
