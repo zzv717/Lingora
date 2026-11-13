@@ -259,7 +259,7 @@ def reanalyze(book_id: str, request: Request, db: Session = Depends(get_db),
     return job
 
 
-def _lesson_locks(db: Session, book: Book, profile: Profile | None) -> tuple[dict[str, dict], list[int]]:
+def _lesson_locks(db: Session, book: Book, profile: Profile | None) -> dict[str, dict]:
     """Vocabulary gating: next lesson unlocks after the previous lesson's vocab test is passed."""
     lessons = list(db.scalars(select(Lesson).where(Lesson.book_id == book.id)
                               .order_by(Lesson.order_index)).all())
@@ -288,6 +288,39 @@ def _lesson_locks(db: Session, book: Book, profile: Profile | None) -> tuple[dic
         }
         prev_passed = gate_ok
     return out
+
+
+@router.get("/{book_id}/lesson-options")
+def lesson_options(book_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Read-only counts of existing lessons, not a claim of complete book mapping."""
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tahlili hali yakunlanmagan.", 409)
+    profile = db.scalar(select(Profile).where(Profile.user_id == user.id))
+    lessons = list(db.scalars(select(Lesson).where(Lesson.book_id == book.id)
+                              .order_by(Lesson.order_index, Lesson.id)).all())
+    progress = _lesson_locks(db, book, profile)
+    ex_counts = dict(db.execute(select(Exercise.lesson_id, func.count(Exercise.id))
+                                .where(Exercise.book_id == book.id, Exercise.lesson_id.is_not(None))
+                                .group_by(Exercise.lesson_id)).all())
+    word_counts = dict(db.execute(select(VocabularyWord.lesson_id, func.count(VocabularyWord.id))
+                                  .where(VocabularyWord.book_id == book.id, VocabularyWord.lesson_id.is_not(None))
+                                  .group_by(VocabularyWord.lesson_id)).all())
+    page_states = list(db.execute(select(BookPage.page_number, BookPage.needs_ocr)
+                                  .where(BookPage.book_id == book.id)).all())
+    return {"book_id": book.id, "page_count": book.page_count, "lessons": [{
+        "id": lesson.id, "title": lesson.title, "topic": lesson.topic,
+        "page_start": lesson.page_start, "page_end": lesson.page_end,
+        "exercise_count": int(ex_counts.get(lesson.id, 0)),
+        "vocabulary_count": int(word_counts.get(lesson.id, 0)),
+        "has_explanation": bool(lesson.grammar_explanation_uz.strip()),
+        "pending_ocr_pages": sum(1 for page, pending in page_states
+                                 if lesson.page_start <= page <= lesson.page_end and pending),
+        "page_inventory_complete": sum(1 for page, _ in page_states
+                                       if lesson.page_start <= page <= lesson.page_end)
+                                   == max(0, lesson.page_end - lesson.page_start + 1),
+        "progress": progress[lesson.id],
+    } for lesson in lessons]}
 
 
 @router.get("/{book_id}/structure", response_model=BookStructureOut)

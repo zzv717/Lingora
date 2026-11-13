@@ -2,9 +2,15 @@
 
 **Status: incomplete / not production-ready as a full interactive workbook.**
 
-The current branch adds a read-only geometry review prototype and a guard for
-OCR pages without detected questions; see `docs/SCANNED_TEXTBOOK_STATUS.md`.
-Real Grammarway 3 and Round-Up page samples were locally audited; Grammarway detection failed on all five requested pages. Browser end-to-end acceptance remains unverified.
+The current branch adds a dashboard lesson-start flow for existing lessons. It
+shows stored exercise/word counts, respects lesson locks, recommends up to two
+by existing progress (not AI), supports custom selection and navigation, and
+links to the existing reader. The plan is in the URL, not a persisted session.
+Scanned pages may have no detected exercises; the separate, consent-gated Vision
+preview remains temporary and does not create interactive lessons. See
+`docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/AI_TUTOR_VISION_AUDIT.md`.
+Real Grammarway 3 and Round-Up samples were locally audited; Grammarway detection
+failed on all five requested pages. Browser end-to-end acceptance remains unverified.
 
 This file replaces earlier broad completion claims that were not supported by an
 end-to-end browser test. The current work is a safety and geometry milestone, not
@@ -30,12 +36,13 @@ current scanned textbook work and its verification limits.
 - Detected matching pairs are not automatically graded as correct just because
   of their inferred layout. Overlay edits are queued for autosave in the UI;
   this UI path still needs browser verification.
-- Automated backend suite: **96 tests passed locally** (SQLite, mock PostgreSQL
-  DDL test; no real PostgreSQL integration test). The newer scanned-book branch
-  included additional OCR geometry/API cases. Production frontend build,
-  proxy test, and pure reader geometry tests passed locally. Generated PDF API
-  smoke through a local Next proxy and local FastAPI: 13 checks passed; this was
-  not browser E2E, real storage, or a real textbook.
+- Automated backend suite: **133 tests passed locally** (SQLite, mock PostgreSQL
+  DDL test; no real PostgreSQL integration test). This includes generated-text PDF
+  upload, lesson counts, exercise access and saved-answer API flow, not a browser
+  E2E or real textbook. Frontend production build, proxy, reader and lesson-plan
+  unit tests passed locally. JSDOM smoke tests with mocked API responses exercised
+  selection and two temporary Vision previews; these are not a real browser or
+  provider integration test.
 
 ## Experimental text-only AI OCR preview
 
@@ -64,19 +71,19 @@ AI/provider acceptance and durable, persistent topic analysis are not complete.
   auditing previously parsed answer keys. Some historical `key` associations
   can be incorrect and need review before being trusted.
 - Placement assessment and level-adapted vocabulary are not implemented.
-- Optional vision page understanding is not implemented; no page images are sent
-  to an AI service by this milestone. Do not enable external image processing
-  without explicit consent and cost/privacy review.
+- Vision page understanding is only an opt-in, temporary preview, not a complete
+  mapping/analysis pipeline; no real provider or scanned-book acceptance has been
+  demonstrated. External image processing requires consent and cost/privacy review.
 - Durable job processing, monitoring and recovery, production storage verification,
   real PostgreSQL integration, deployment environment isolation and security
   dependency upgrades. `npm ci` reported 15 vulnerabilities (2 critical).
 
 ## Deployment
 
-This branch does not require a schema migration; page-type inference is not
-persisted. Authorized production direct-upload configuration was deployed with a
-50 MiB limit, but authenticated uploads and near-limit TUS remain untested.
-This branch has not been deployed. See `docs/WORKBOOK_AUDIT.md`,
+This branch does not require a schema migration; page-type inference and lesson
+plans are not persisted. Authorized production direct-upload configuration was
+deployed with a 50 MiB limit, but authenticated uploads and near-limit TUS remain
+untested. This dashboard update has not yet been deployed. See `docs/WORKBOOK_AUDIT.md`,
 `docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/DEPLOYMENT.md` before deployment.
 
 ## Annotated sample and AI check

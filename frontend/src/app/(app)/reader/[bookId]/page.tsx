@@ -10,6 +10,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { get, post } from "@/lib/api";
 import { trustedBlank, chooseLesson } from "@/lib/reader-utils";
+import { validPlan } from "@/lib/lesson-plan";
 import { withTimeout } from "@/lib/timeout";
 import type { Exercise, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
 import { Button, Card, Spinner, useToast } from "@/components/ui";
@@ -57,6 +58,23 @@ function ReaderInner() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId, structureRetry]);
+
+  // Respect browser navigation when the selected lesson in the URL changes.
+  const requestedLesson = search.get("lesson");
+  useEffect(() => {
+    if (struct && requestedLesson && struct.lessons.some((l) => l.id === requestedLesson) &&
+        !struct.lessons_progress[requestedLesson]?.locked) setLessonId(requestedLesson);
+  }, [struct, requestedLesson]);
+
+  const selectLesson = useCallback((id: string) => {
+    if (!struct || !struct.lessons.some((l) => l.id === id) || struct.lessons_progress[id]?.locked) return;
+    setLessonId(id);
+    const query = new URLSearchParams(search.toString());
+    query.set("lesson", id);
+    router.replace(`/reader/${encodeURIComponent(bookId)}?${query.toString()}`, { scroll: false });
+  }, [bookId, router, search, struct]);
+  const plannedIds = useMemo(() => struct ? validPlan(search.get("plan"), struct.lessons, struct.lessons_progress) : [], [search, struct]);
+  const planPosition = plannedIds.indexOf(lessonId);
 
   useEffect(() => {
     if (!lessonId || !struct) return;
@@ -167,7 +185,7 @@ function ReaderInner() {
           <Link href={`/books/${bookId}`} className="shrink-0 text-sm text-slate-400 hover:text-brand-500">← Kitob</Link>
           <select
             value={lessonId}
-            onChange={(e) => setLessonId(e.target.value)}
+            onChange={(e) => selectLesson(e.target.value)}
             className="max-w-[220px] truncate rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800">
             {struct.lessons.map((l) => (
               <option key={l.id} value={l.id} disabled={struct.lessons_progress[l.id]?.locked}>
@@ -193,6 +211,12 @@ function ReaderInner() {
         </div>
       </div>
 
+      {planPosition >= 0 && <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-brand-50 px-4 py-2 text-xs dark:border-slate-800 dark:bg-brand-950/30">
+        <span>Tanlangan darslar: {planPosition + 1}/{plannedIds.length}</span>
+        <Button size="sm" variant="secondary" disabled={planPosition === 0} onClick={() => selectLesson(plannedIds[planPosition - 1])}>← Oldingi</Button>
+        <Button size="sm" variant="secondary" disabled={planPosition >= plannedIds.length - 1} onClick={() => selectLesson(plannedIds[planPosition + 1])}>Keyingi →</Button>
+        <Link href="/lesson-start" className="text-brand-600 hover:underline">Tanlovni o'zgartirish</Link>
+      </div>}
       <div className="flex min-h-0 flex-1">
         <div className="thin-scroll min-w-0 flex-1 space-y-4 overflow-y-auto p-3">
           <PdfViewer

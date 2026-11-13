@@ -9,7 +9,7 @@
     "lint": "next lint",
     "postinstall": "node scripts/copy-workers.cjs",
     "test:proxy": "node tests/proxy.test.mjs",
-    "test:reader": "node tests/reader.test.mjs"
+    "test:reader": "node tests/reader.test.mjs && node tests/lesson-plan.test.mjs"
   },
   "dependencies": {
     "@tesseract.js-data/eng": "^1.0.0",
