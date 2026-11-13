@@ -7,7 +7,7 @@ import { api, getAccessToken } from "@/lib/api";
 import { Button, ErrorBox, Input, Modal, Progress, useToast } from "@/components/ui";
 import type { Book, Job } from "@/lib/types";
 
-const MAX_MB = 50;
+const MAX_MB = 100;
 
 type UploadPreparation = { direct: false } | {
   direct: true; book_id: string; endpoint: string; bucket: string;
