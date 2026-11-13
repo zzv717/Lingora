@@ -14,6 +14,10 @@ const TYPE_LABELS: Record<string, string> = {
   matching: "Moslashtirish",
   translation: "Tarjima",
   sentence_construction: "Gap tuzish",
+  sentence_transformation: "Gapni o'zgartirish",
+  word_formation: "So'z yasash",
+  error_correction: "Xatoni tuzatish",
+  short_answer: "Qisqa javob",
   writing: "Yozish",
   reading_comprehension: "Matnni o'qish",
   true_false: "To'g'ri/Xato",
@@ -96,7 +100,7 @@ export default function BookDetailPage() {
               </Button>
             </div>
           </div>
-          <BrowserOCR bookId={id} pending={cov.pages_needing_ocr || 0} onUpdate={() => {
+          <BrowserOCR bookId={id} pageCount={struct.book.page_count} pending={cov.pages_needing_ocr || 0} onUpdate={() => {
             get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});
           }} />
         </Card>

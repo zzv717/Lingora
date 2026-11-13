@@ -1,6 +1,7 @@
 """Books: secure upload, listing, structure, status, file streaming, deletion, re-analysis."""
 import io
 import logging
+import math
 import uuid
 from datetime import timedelta
 from datetime import datetime, timezone
@@ -324,6 +325,16 @@ def book_structure(book_id: str, db: Session = Depends(get_db), user: User = Dep
     )
 
 
+def _inferred_page_type(page: BookPage) -> str:
+    # Once OCR has been stored, original native text cannot be distinguished
+    # from OCR text on legacy rows. Never claim a definitive original type.
+    if page.ocr_used:
+        return "unknown"
+    has_text = bool(page.text.strip())
+    has_images = bool(page.images)
+    return "mixed" if has_text and has_images else "text" if has_text else "scanned" if has_images else "unknown"
+
+
 @router.get("/{book_id}/pages/{page_number}", response_model=PageOut)
 def get_page(book_id: str, page_number: int, db: Session = Depends(get_db),
              user: User = Depends(get_current_user)):
@@ -334,7 +345,7 @@ def get_page(book_id: str, page_number: int, db: Session = Depends(get_db),
         raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
     return PageOut(
         page_number=page.page_number, width=page.width, height=page.height, text=page.text,
-        blocks=page.blocks, images=page.images, needs_ocr=page.needs_ocr,
+        blocks=page.blocks, images=page.images, page_type=_inferred_page_type(page), needs_ocr=page.needs_ocr,
         ocr_used=page.ocr_used, has_warning=page.has_warning,
     )
 
@@ -349,11 +360,80 @@ def ocr_pending(book_id: str, db: Session = Depends(get_db), user: User = Depend
         BookPage.book_id == book.id, BookPage.needs_ocr.is_(True)).order_by(BookPage.page_number)).all())}
 
 
+def _valid_ocr_box(page: BookPage, box: list[float]) -> bool:
+    x0, y0, x1, y1 = box
+    return (page.width > 0 and page.height > 0 and all(math.isfinite(v) for v in box)
+            and 0 <= x0 < x1 <= page.width and 0 <= y0 < y1 <= page.height)
+
+
+def _prepare_ocr(page: BookPage, data: OCRPageIn):
+    from app.services.ocr_layout import order_ocr_lines
+    from app.services.structure_detector import detect_structure
+
+    lines = []
+    for item in data.lines:
+        if not _valid_ocr_box(page, item.bbox) or any(not _valid_ocr_box(page, word.bbox) for word in item.words):
+            raise ApiError("INVALID_OCR", "Sahifa koordinatalari noto'g'ri.", 422)
+        lines.append({"text": item.text.strip(), "bbox": item.bbox, "confidence": item.confidence,
+                      "words": [word.model_dump() for word in item.words],
+                      "size": 10, "bold": False, "x0": item.bbox[0]})
+    lines, layout = order_ocr_lines(lines, page.width)
+    text = "\n".join(line["text"] for line in lines)
+    if len(text.strip()) < 24:
+        raise ApiError("OCR_TOO_LITTLE_TEXT", "Sahifadan yetarli matn ajratilmadi; keyin qayta urinib ko'ring.", 422)
+    # No silent truncation of the persisted text column.
+    if len(text) > 60000:
+        raise ApiError("OCR_TOO_MUCH_TEXT", "Sahifa matni saqlash chegarasidan oshdi; ko'rib chiqish kerak.", 422)
+    structure = detect_structure([{"page_number": page.page_number, "width": page.width,
+                                  "height": page.height, "text": text, "lines": lines, "ocr_used": True}])
+    if layout != "original":
+        structure.warnings.append({"page": page.page_number, "code": "OCR_LAYOUT_REVIEW",
+            "message_uz": ("Ikki ustun taxmin qilindi; o'qish tartibini tekshiring." if layout == "two_columns"
+                            else "Sahifa ustun yoki jadval bo'lishi mumkin; o'qish tartibini tekshiring.")})
+    return lines, text, structure
+
+
+def _ocr_geometry(page: BookPage, bbox, lines):
+    if not bbox or not _valid_ocr_box(page, bbox):
+        return None
+    x0, y0, x1, y1 = bbox
+    confidences = [line["confidence"] for line in lines
+                   if line["confidence"] is not None
+                   and line["bbox"][0] < x1 and line["bbox"][2] > x0
+                   and line["bbox"][1] < y1 and line["bbox"][3] > y0]
+    return {"bbox": bbox, "normalized_bbox": [x0 / page.width, y0 / page.height,
+            x1 / page.width, y1 / page.height], "page_index": page.page_number - 1,
+            "ocr_confidence": sum(confidences) / len(confidences) if confidences else None,
+            "coordinate_space": "unrotated_crop_points"}
+
+
+@router.post("/{book_id}/ocr/pages/{page_number}/preview")
+def preview_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: Request,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Inspect a page without changing existing OCR, exercises, answers or progress."""
+    limit(request, "browser_ocr", 600, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tahlili hali yakunlanmagan.", 409)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book.id, BookPage.page_number == page_number))
+    if not page:
+        raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
+    lines, text, structure = _prepare_ocr(page, data)
+    lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
+                      Lesson.page_start <= page_number, Lesson.page_end >= page_number)
+                      .order_by(Lesson.order_index).limit(1))
+    return {"page_number": page_number, "already_processed": not page.needs_ocr,
+            "text": text, "lines": lines, "lesson": {"id": lesson.id, "title": lesson.title} if lesson else None,
+            "exercises": [{"title": ex.title, "instructions": ex.instructions, "type": ex.exercise_type,
+                "geometry": _ocr_geometry(page, ex.bbox, lines), "needs_review": True,
+                "questions": [{"number": q.number, "prompt": q.prompt} for q in ex.questions]}
+                for ex in structure.exercises], "warnings": structure.warnings}
+
+
 @router.post("/{book_id}/ocr/pages/{page_number}")
 def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: Request,
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Store one locally recognized page and append reviewable exercises; never replace existing work."""
-    from app.services.structure_detector import detect_structure
     limit(request, "browser_ocr", 600, 3600, user.id)
     book = owned_book(db, user, book_id)
     # Serialize with other imports for the same book on PostgreSQL.
@@ -366,18 +446,9 @@ def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: R
         raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
     if not page.needs_ocr:
         return {"already_processed": True, "exercises_added": 0, "words_added": 0}
-    lines = []
-    for item in data.lines:
-        x0, y0, x1, y1 = item.bbox
-        if not (0 <= x0 <= x1 <= page.width + 1 and 0 <= y0 <= y1 <= page.height + 1):
-            raise ApiError("INVALID_OCR", "Sahifa koordinatalari noto'g'ri.", 422)
-        lines.append({"text": item.text.strip(), "bbox": [x0, y0, x1, y1],
-                      "size": 10, "bold": False, "x0": x0})
-    text = "\n".join(line["text"] for line in lines)
-    if len(text.strip()) < 24:
-        raise ApiError("OCR_TOO_LITTLE_TEXT", "Sahifadan yetarli matn ajratilmadi; keyin qayta urinib ko'ring.", 422)
-    structure = detect_structure([{"page_number": page_number, "width": page.width,
-                                  "height": page.height, "text": text, "lines": lines}])
+    if page.text.strip():
+        raise ApiError("MIXED_PAGE_REVIEW_REQUIRED", "Sahifada avvalgi matn mavjud; uni almashtirmaslik uchun faqat OCR sinovidan foydalaning.", 409)
+    lines, text, structure = _prepare_ocr(page, data)
     lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
                      Lesson.page_start <= page_number, Lesson.page_end >= page_number)
                      .order_by(Lesson.order_index).limit(1))
@@ -385,10 +456,11 @@ def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: R
     for ex in structure.exercises:
         if not ex.questions:
             continue
+        geometry = _ocr_geometry(page, ex.bbox, lines)
         row = Exercise(book_id=book.id, lesson_id=lesson.id if lesson else None,
                        chapter_id=lesson.chapter_id if lesson else None,
                        exercise_type=ex.exercise_type, title=ex.title, instructions=ex.instructions,
-                       ref=ex.ref, page_number=page_number, source="book", topic=ex.topic,
+                       ref=ex.ref, page_number=page_number, source="book", topic=ex.topic, bbox=geometry,
                        order_index=page_number * 100 + count, detection="ocr", needs_review=True)
         db.add(row)
         db.flush()
@@ -418,7 +490,7 @@ def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: R
                page_number=page_number, source="book", needs_translation=True))
         existing.add(term.lower())
         words_added += 1
-    page.text = text[:60000]
+    page.text = text
     page.blocks = lines
     page.needs_ocr = False
     page.ocr_used = True

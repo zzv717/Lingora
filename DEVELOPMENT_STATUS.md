@@ -4,7 +4,8 @@
 
 This file replaces earlier broad completion claims that were not supported by an
 end-to-end browser test. The current work is a safety and geometry milestone, not
-the requested full engine rebuild.
+the requested full engine rebuild. See `docs/SCANNED_TEXTBOOK_STATUS.md` for the
+current scanned textbook work and its verification limits.
 
 ## Verified in this checkout
 
@@ -26,7 +27,8 @@ the requested full engine rebuild.
   of their inferred layout. Overlay edits are queued for autosave in the UI;
   this UI path still needs browser verification.
 - Automated backend suite: **96 tests passed locally** (SQLite, mock PostgreSQL
-  DDL test; no real PostgreSQL integration test). Production frontend build,
+  DDL test; no real PostgreSQL integration test). The newer scanned-book branch
+  included additional OCR geometry/API cases. Production frontend build,
   proxy test, and pure reader geometry tests passed locally. Generated PDF API
   smoke through a local Next proxy and local FastAPI: 13 checks passed; this was
   not browser E2E, real storage, or a real textbook.
@@ -39,8 +41,9 @@ the requested full engine rebuild.
   migration of unmappable student work; existing books cannot be re-analyzed.
 - General multi-column, tables, diagrams, vector-drawn blanks, multiple-page
   exercises, headingless numbered content, reading and matching reconstruction.
-- Browser OCR word boxes/rotation, OCR blank detection, Uzbek OCR data, scan
-  quality evaluation, and accurate page-by-page completion reporting.
+- Browser OCR word boxes/rotation have synthetic viewport tests but need actual
+  browser and real-page verification. OCR blank detection, Uzbek OCR data, scan
+  quality evaluation, and complete page-by-page reporting remain unfinished.
 - Review interface, human verification of answer keys, partial scoring, and
   auditing previously parsed answer keys. Some historical `key` associations
   can be incorrect and need review before being trusted.
@@ -54,8 +57,9 @@ the requested full engine rebuild.
 
 ## Deployment
 
-No database migration is included. Vercel deployment metadata reported current
-main `ef00a52` as READY and selected Supabase DB/storage services as healthy;
-this is not proof that production credentials, upload, OCR, workers, or a real
-user workflow work. Production was not changed by this milestone. See
-`docs/WORKBOOK_AUDIT.md` and `docs/DEPLOYMENT.md` before any deployment.
+This branch does not require a schema migration; page-type inference is not
+persisted. A previous production environment
+configuration change restored backend health and its database readiness probe, but
+this is not proof of upload, storage access, OCR, workers, or a real user workflow.
+This branch has not been deployed. See `docs/WORKBOOK_AUDIT.md`,
+`docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/DEPLOYMENT.md` before deployment.

@@ -12,6 +12,7 @@ import fitz  # PyMuPDF
 
 from app.core.config import settings
 from app.core.errors import ApiError
+from app.services.ocr_layout import order_ocr_lines
 
 log = logging.getLogger("lingora.pdf")
 
@@ -182,11 +183,24 @@ def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], Non
         progress_cb and progress_cb(start + (end - start) * i / max(total, 1), "extracting")
         lines = _extract_lines(page)
         text = page.get_text("text").strip()
+        images = _extract_images(page)
+        # This is a layout indicator, not proof that an image contains text.
+        # A text layer over a scanned page is also mixed and must be reviewed.
+        page_type = "mixed" if text and images else "text" if text else "scanned" if images else "blank"
         needs_ocr = len(text) < MIN_TEXT_CHARS_FOR_OCR
         ocr_used = False
         page_text = text
-        if needs_ocr:
+        if page_type == "mixed":
+            warnings.append({"page": i + 1, "code": "MIXED_PAGE_REVIEW_REQUIRED",
+                "message_uz": f"{i + 1}-sahifada matn va rasm bor; rasm ichidagi matn ko'rib chiqilishi kerak."})
+        # Never overwrite the native layer of a mixed page with unverified OCR.
+        # A short native layer leaves the page pending for manual preview.
+        if needs_ocr and page_type != "mixed":
             ocr_lines = ocr_page_lines(page)
+            ocr_lines, layout = order_ocr_lines(ocr_lines, page.cropbox.width)
+            if layout != "original":
+                warnings.append({"page": i + 1, "code": "OCR_LAYOUT_REVIEW",
+                                 "message_uz": f"{i + 1}-sahifaning ustun/jadval tartibi tekshirilishi kerak."})
             ocr_text = "\n".join(line["text"] for line in ocr_lines)
             confidence = sum(line.get("confidence", 0) for line in ocr_lines) / max(len(ocr_lines), 1)
             if len(ocr_text.strip()) >= MIN_TEXT_CHARS_FOR_OCR and confidence >= 40:
@@ -211,7 +225,8 @@ def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], Non
             "height": round(page.cropbox.height, 2),
             "text": page_text,
             "lines": lines,
-            "images": _extract_images(page),
+            "images": images,
+            "page_type": page_type,
             "needs_ocr": needs_ocr and not ocr_used,
             "ocr_used": ocr_used,
         })

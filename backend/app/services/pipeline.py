@@ -121,9 +121,11 @@ class Pipeline:
             raise ApiError("REANALYZE_UNSAFE", "Mavjud kitob ma'lumotlarini saqlash uchun qayta tahlil to'xtatildi.", 409)
 
         for p in pages:
+            if len(p["text"]) > 60000:
+                raise ApiError("PAGE_TEXT_TOO_LARGE", f"{p['page_number']}-sahifa matni saqlash chegarasidan oshdi.", 422)
             self.db.add(BookPage(
                 book_id=book.id, page_number=p["page_number"], width=p["width"], height=p["height"],
-                text=p["text"][:60000], blocks=p["lines"], images=p["images"],
+                text=p["text"], blocks=p["lines"], images=p["images"],
                 needs_ocr=p["needs_ocr"], ocr_used=p["ocr_used"],
                 has_warning=any(w.get("page") == p["page_number"] for w in deduped_warn),
             ))
