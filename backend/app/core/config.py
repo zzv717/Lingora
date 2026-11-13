@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = "lingora-books"
 
     # --- Upload limits ---
-    upload_max_mb: int = 50
+    upload_max_mb: int = 100
     max_pages: int = 300
 
     # --- SMTP (password resets) ---
