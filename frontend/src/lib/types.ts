@@ -110,7 +110,7 @@ export interface Question {
   order_index: number;
   prompt: string;
   passage: string;
-  blanks: { id: string; bbox: number[] | null }[];
+  blanks: { id: string; bbox: number[] | null; geometry?: string }[];
   matching_pairs: { left: string; right: string }[];
   options: Option[];
 }

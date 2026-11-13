@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
     # A serverless cold start can coincide with a job running in another instance.
     # Global startup recovery would incorrectly mark that active job as failed.
-    if not os.environ.get("VERCEL"):
+    if not os.environ.get("VERCEL") and settings.env != "prod" and settings.task_backend == "inline":
         try:
             from app.services.tasks import recover_stuck_jobs
 

@@ -29,6 +29,9 @@ LESSON_RE = re.compile(
     r"^(review|check\s+your\s+(progress|knowledge|answers?)|test\s+yourself|progress\s+check)\b[\s\.:—–-]*(.*)$",
     re.IGNORECASE,
 )
+INSTRUCTION_RE = re.compile(
+    r"^(?:complete|fill\s+in|choose|match|read\s+and\s+answer|write\s+about|rewrite|"
+    r"put\s+the\s+words|translate|true\s+or\s+false|answer\s+the\s+questions)\b", re.IGNORECASE)
 KEY_HEADER_RE = re.compile(r"^(answer\s*keys?|keys?|answers?|javoblar)\b[\s:—–-]*$", re.IGNORECASE)
 VOCAB_PAIR_RE = re.compile(r"^([A-Za-z][A-Za-z'’\-\. ]{1,48}?)\s*(?:[—–·•]| - |\t|=|\s{3,}|\|)\s*(.{1,120})$")
 DASH_PAIR_RE = re.compile(r"^(.{1,60}?)\s*(?:[—–·•]| - )\s*(.{1,120})$")
@@ -71,6 +74,7 @@ class DetectedQuestion:
     blanks: list[dict[str, Any]] = field(default_factory=list)
     matching_pairs: list[dict[str, Any]] = field(default_factory=list)
     bbox: list[float] | None = None
+    needs_review: bool = False
 
 
 @dataclass
@@ -105,18 +109,16 @@ def guess_topic(text: str) -> str:
 
 
 def _blank_bboxes(line: dict[str, Any], page_width: float) -> list[list[float] | None]:
-    """Approximate bbox for each blank run inside a line (proportional char split)."""
+    """Union real glyph boxes only; never guess from line width or missing OCR geometry."""
     text = line["text"]
-    boxes: list[list[float] | None] = []
-    matches = list(BLANK_RE.finditer(text))
-    x0, y0, x1, y1 = line["bbox"]
-    for m in matches:
-        ratio0 = m.start() / max(len(text), 1)
-        ratio1 = m.end() / max(len(text), 1)
-        boxes.append([
-            round(x0 + (x1 - x0) * ratio0, 2), round(y0, 2),
-            round(x0 + (x1 - x0) * ratio1, 2), round(y1, 2),
-        ])
+    chars = line.get("chars") or []
+    boxes = []
+    for match in BLANK_RE.finditer(text):
+        glyphs = chars[match.start():match.end()] if len(chars) == len(text) else []
+        if len(glyphs) != len(match.group()) or any(not box for box in glyphs):
+            boxes.append(None)
+        else:
+            boxes.append(_union_bbox(glyphs))
     return boxes
 
 
@@ -150,7 +152,7 @@ def _parse_exercise_block(header: dict[str, Any], body_lines: list[dict[str, Any
                           page_number: int, structure: DetectedStructure) -> DetectedExercise:
     m = EXERCISE_RE.match(header["text"])
     num = (m.group(2) or "").strip() if m else ""
-    instr = (m.group(3) or "").strip() if m else ""
+    instr = (m.group(3) or "").strip() if m else header["text"].strip()
     ref = f"Exercise {num}" if num else f"Exercise (p.{page_number},{header.get('seq', '?')})"
 
     questions: list[DetectedQuestion] = []
@@ -167,6 +169,7 @@ def _parse_exercise_block(header: dict[str, Any], body_lines: list[dict[str, Any
             current = {
                 "number": nm.group(1), "prompt": nm.group(2).strip(),
                 "bbox": line["bbox"], "page": page_number,
+                "chars": (line.get("chars") or [None] * len(text))[nm.start(2):nm.end(2)],
             }
             continue
         if om and current is not None:
@@ -180,6 +183,7 @@ def _parse_exercise_block(header: dict[str, Any], body_lines: list[dict[str, Any
                 instruction_parts.append(text)
             else:
                 current["prompt"] = (current["prompt"] + " " + text).strip()
+                current["chars"] += [None] + (line.get("chars") or [None] * len(text))
         else:
             instruction_parts.append(text)
 
@@ -195,13 +199,16 @@ def _parse_exercise_block(header: dict[str, Any], body_lines: list[dict[str, Any
         title=ref, ref=ref, instructions=" ".join(instruction_parts).strip()[:1000],
         page_number=page_number, exercise_type=exercise_type, questions=questions, bbox=bbox,
         topic=guess_topic(" ".join(instruction_parts)),
-        needs_review=len(questions) == 0,
+        needs_review=(not m) or len(questions) == 0 or any(q.needs_review for q in questions),
     )
-    if ex.needs_review:
+    if not questions:
         structure.warnings.append({
             "page": page_number, "code": "EXERCISE_NO_QUESTIONS",
             "message_uz": f"{ref} (sahifa {page_number}): topshiriq matni topildi, lekin savollar ajratib olinmadi.",
         })
+    if any(q.needs_review for q in questions):
+        structure.warnings.append({"page": page_number, "code": "BLANK_LOCATION_UNKNOWN",
+                                   "message_uz": "Ba'zi bo'sh joylar joylashuvi aniqlanmadi; javobni kartada kiriting."})
     return ex
 
 
@@ -210,9 +217,9 @@ def _finish_question(cur: dict[str, Any]) -> DetectedQuestion:
     blanks = []
     matches = list(BLANK_RE.finditer(prompt))
     for i, m in enumerate(matches, 1):
-        boxes = _blank_bboxes({"text": prompt, "bbox": cur["bbox"]}, 0)
+        boxes = _blank_bboxes({"text": prompt, "chars": cur.get("chars", [])}, 0)
         bbox = boxes[i - 1] if i - 1 < len(boxes) else None
-        blanks.append({"id": f"b{i}", "bbox": bbox})
+        blanks.append({"id": f"b{i}", "bbox": bbox, "geometry": "native_chars" if bbox else "unlocated"})
     # build display prompt with {bN} placeholders
     display = ""
     last = 0
@@ -228,6 +235,7 @@ def _finish_question(cur: dict[str, Any]) -> DetectedQuestion:
     return DetectedQuestion(
         number=cur["number"], prompt=display if matches else prompt,
         options=cur.get("options", []), blanks=blanks, matching_pairs=pairs, bbox=cur["bbox"],
+        needs_review=any(not b["bbox"] for b in blanks),
     )
 
 
@@ -269,68 +277,67 @@ def _detect_vocabulary(pages: list[dict[str, Any]], structure: DetectedStructure
 
 def _detect_answer_keys(pages: list[dict[str, Any]], structure: DetectedStructure) -> None:
     in_key = False
+    current_ref = ""
     for page in pages:
+        # OCR can corrupt answers or exercise references; never treat it as a verified key.
+        if page.get("ocr_used"):
+            continue
         for line in page["lines"]:
-            text = line["text"]
-            if KEY_HEADER_RE.match(text.strip()) and len(text.strip()) < 40:
+            text = line["text"].strip()
+            if KEY_HEADER_RE.match(text) and len(text) < 40:
                 in_key = True
+                current_ref = ""
                 continue
-            if in_key:
-                if EXERCISE_RE.match(text) and not re.match(r"^\d", text):
-                    in_key = False
-                    continue
-                if CHAPTER_RE.match(text):
-                    in_key = False
-                    continue
-                consumed = False
-                # inline pairs: "1 b 2 c 3 a" or "1. b 2. a" possibly many per line
-                for m in re.finditer(r"(\d{1,3})\s*[\.\)\-:]?\s+([A-Da-d]\b|[\w'’\.,;\- ]{1,60}?)(?=\s+\d{1,3}[\.\)\-:]?\s|\s*$)", text):
+            if not in_key:
+                continue
+            header = EXERCISE_RE.match(text)
+            if header:
+                num = header.group(2)
+                current_ref = f"exercise {num}" if num else ""
+                continue
+            if CHAPTER_RE.match(text):
+                in_key = False
+                current_ref = ""
+                continue
+            consumed = False
+            for m in re.finditer(r"(\d{1,3})\s*[\.\)\-:]?\s+([A-Da-d]\b|[\w'’\.,;\- ]{1,60}?)(?=\s+\d{1,3}[\.\)\-:]?\s|\s*$)", text):
+                structure.answer_key_entries.append({
+                    "exercise_ref": current_ref, "question_number": m.group(1),
+                    "answers": [a.strip() for a in re.split(r"[,;/]", m.group(2)) if a.strip()],
+                    "page": page["page_number"],
+                })
+                consumed = True
+            if not consumed:
+                nm = NUM_ITEM_RE.match(text)
+                if nm:
                     structure.answer_key_entries.append({
-                        "exercise_ref": "", "question_number": m.group(1),
-                        "answers": [a.strip() for a in re.split(r"[,;/]", m.group(2)) if a.strip()],
+                        "exercise_ref": current_ref, "question_number": nm.group(1),
+                        "answers": [a.strip() for a in re.split(r"[,;/]", nm.group(2)) if a.strip()],
                         "page": page["page_number"],
                     })
-                    consumed = True
-                if not consumed:
-                    nm = NUM_ITEM_RE.match(text)
-                    if nm:
-                        answers = [a.strip() for a in re.split(r"[,;/]", nm.group(2)) if a.strip()]
-                        structure.answer_key_entries.append({
-                            "exercise_ref": "", "question_number": nm.group(1),
-                            "answers": answers, "page": page["page_number"],
-                        })
 
 
 def _attach_answer_keys(structure: DetectedStructure) -> None:
-    if not structure.answer_key_entries:
-        return
-    entries = sorted(structure.answer_key_entries, key=lambda e: (e["page"], int(e["question_number"]) if e["question_number"].isdigit() else 0))
-    counter = 1
+    """Match only unique explicit exercise+question refs, or globally unique unlabelled numbers."""
+    from collections import Counter
+    refs = Counter(ex.ref.lower() for ex in structure.exercises)
+    numbers = Counter(q.number for ex in structure.exercises for q in ex.questions)
     for ex in structure.exercises:
-        # direct ref match first ("Exercise 5" -> entries labelled by key grouping is rare; use sequence)
-        taken = 0
+        ref = ex.ref.lower()
         for q in ex.questions:
-            match = next((e for e in entries if not e.get("_used") and e["question_number"] == str(counter)), None)
-            if match is None:
-                break
-            match["_used"] = True
-            q.correct_answers = match["answers"]
-            q.answer_source = "key"
-            taken += 1
-            counter += 1
-        if taken < len(ex.questions):
-            # numbers didn't align fully; mark for (optional) AI resolution / review
-            for q in ex.questions:
-                if not q.correct_answers:
-                    q.answer_source = "unknown"
-            if taken > 0 or ex is structure.exercises[0]:
-                structure.warnings.append({
-                    "page": ex.page_number, "code": "KEY_PARTIAL",
-                    "message_uz": (
-                        f"{ex.ref} (sahifa {ex.page_number}): javoblar kaliti qisman mos tushdi "
-                        f"({taken}/{len(ex.questions)}). Qolgan savollar tekshiruvi boshqa usulda baholanadi."
-                    ),
-                })
+            labelled = [e for e in structure.answer_key_entries if e["exercise_ref"] == ref
+                        and e["question_number"] == q.number] if refs[ref] == 1 else []
+            unlabelled = [e for e in structure.answer_key_entries if not e["exercise_ref"]
+                          and e["question_number"] == q.number] if numbers[q.number] == 1 else []
+            candidates = labelled or unlabelled
+            if len(candidates) == 1 and candidates[0]["answers"]:
+                q.correct_answers = candidates[0]["answers"]
+                q.answer_source = "key"
+            elif labelled or unlabelled or structure.answer_key_entries:
+                q.needs_review = True
+                ex.needs_review = True
+                structure.warnings.append({"page": ex.page_number, "code": "KEY_AMBIGUOUS",
+                    "message_uz": f"{ex.ref}, {q.number}: javob kaliti ishonchli moslanmadi."})
 
 
 def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
@@ -420,11 +427,19 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
 
     # ---- exercises ----
     for page in pages:
-        hdr_idx = [i for i, ln in enumerate(page["lines"]) if EXERCISE_RE.match(ln["text"].strip())]
+        # Exercise labels inside an answer-key section are references, not exercises.
+        key_index = next((i for i, ln in enumerate(page["lines"]) if KEY_HEADER_RE.match(ln["text"].strip())), len(page["lines"]))
+        content_lines = page["lines"][:key_index]
+        hdr_idx = [i for i, ln in enumerate(content_lines) if EXERCISE_RE.match(ln["text"].strip())]
+        if not hdr_idx:
+            # Conservative fallback: an instruction followed nearby by numbered items.
+            # Do not infer headingless exercises from arbitrary numbered prose alone.
+            hdr_idx = [i for i, ln in enumerate(content_lines) if INSTRUCTION_RE.match(ln["text"].strip())
+                       and any(NUM_ITEM_RE.match(nxt["text"].strip()) for nxt in content_lines[i+1:i+5])]
         for j, i in enumerate(hdr_idx):
-            header = page["lines"][i]
-            end = hdr_idx[j + 1] if j + 1 < len(hdr_idx) else len(page["lines"])
-            body = page["lines"][i + 1:end]
+            header = {**content_lines[i], "seq": i + 1}
+            end = hdr_idx[j + 1] if j + 1 < len(hdr_idx) else len(content_lines)
+            body = content_lines[i + 1:end]
             structure.exercises.append(_parse_exercise_block(header, body, page["page_number"], structure))
 
     # ---- matching: two-column layout when "match" instruction present ----

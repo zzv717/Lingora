@@ -76,15 +76,19 @@ def make_sample_book() -> bytes:
     p = doc.new_page(width=595, height=842)
     _page_lines(p, [
         ("Answer key", 14, True),
+        ("Exercise 1", BODY, False),
         ("1. goes", BODY, False),
         ("2. play", BODY, False),
         ("3. does", BODY, False),
-        ("4. B", BODY, False),
-        ("5. C", BODY, False),
-        ("6. He goes to school every day.", BODY, False),
-        ("7. We play football every Sunday.", BODY, False),
-        ("8. is teaching", BODY, False),
-        ("9. are playing", BODY, False),
+        ("Exercise 2", BODY, False),
+        ("1. B", BODY, False),
+        ("2. B", BODY, False),
+        ("Exercise 3", BODY, False),
+        ("1. He goes to school every day.", BODY, False),
+        ("2. We play football every Sunday.", BODY, False),
+        ("Exercise 4", BODY, False),
+        ("1. is teaching", BODY, False),
+        ("2. are playing", BODY, False),
     ])
 
     return doc.tobytes()

@@ -1,72 +1,61 @@
-# Lingora — DEVELOPMENT STATUS
+# Lingora — Development Status
 
-Oxirgi yangilanish: 2026-11-09 · Holat: **Barcha fazalar (1–8) to'liq auditdan o'tgan, mustahkamlangan va 63/63 testlar bilan tasdiqlangan**
+**Status: incomplete / not production-ready as a full interactive workbook.**
 
-## ✅ Yakunlangan funksiyalar va Xavfsizlik Auditi
+This file replaces earlier broad completion claims that were not supported by an
+end-to-end browser test. The current work is a safety and geometry milestone, not
+the requested full engine rebuild.
 
-### 1. Xavfsizlik va Auth
-- [x] **Password Reset Token xavfsizligi**: Production rejimida token API javobida va loglarda hech qachon oshkor bo'lmaydi. Bir martalik ishlatiladi va avvalgi barcha faol sessiyalarni bekor qiladi.
-- [x] **Tutor & Mashq IDOR himoyasi**: Foydalanuvchi faqat o'ziga tegishli kitob, dars yoki mashq bo'yicha suhbat ochishi mumkin (`_verify_tutor_scope`). Boshqa foydalanuvchilar resurslari 404/403 bilan qat'iy bloklanadi.
-- [x] **Lug'at darvozasi (Vocabulary Gate)**: Backend darajasida `LESSON_LOCKED` 403 xatosi bilan to'liq himoyalangan (faqat UI'da tugmani o'chirib qo'yish bilan cheklanmagan).
-- [x] **Atomik Refresh Token rotatsiyasi**: Poyga (race condition) va token o'g'irlanishini aniqlash (`replay detection`) bilan to'liq himoyalangan.
-- [x] **Rate Limiting**: Redis qo'llab-quvvatlaydi, reverse proxy uchun `trusted_proxies` orqali IP spoofing'dan himoyalangan.
-- [x] **Production SECRET_KEY**: Ishlab chiqarish rejimida bo'sh yoki xavfli standart kalitda server darhol to'xtaydi (fail-fast).
-- [x] **Xavfsiz fayl boshqaruvi**: Path traversal hujumlariga qarshi tekshiruv va atomik fayllarni o'chirish.
+## Verified in this checkout
 
-### 2. Database & Supabase RLS
-- [x] Barcha 27 ta jadval uchun PostgreSQL DDL va to'liq RLS siyosatlari (`database/supabase_schema.sql`).
-- [x] Custom JWT va Supabase Auth o'rtasidagi arxitektura mosligi (`lingora_current_user_id()` funksiyasi orqali).
-- [x] PostgreSQL drayverlari (`psycopg2-binary`, `asyncpg`) to'liq qo'shilgan.
-- [x] Docker Compose: PostgreSQL 16, Redis 7, Celery Worker, FastAPI backend va Next.js frontend to'liq integratsiyasi.
+- Existing analyzed content is protected from destructive re-analysis: the API
+  and pipeline reject replacement until versioned staging and migration exist.
+  New first-pass content is saved in one transaction; a simulated write failure
+  rolls it back. This is a safety block, **not** versioned re-analysis.
+- New native-text PDF blanks are located from PyMuPDF character boxes in
+  unrotated, crop-relative points. Missing geometry is shown in a card instead of
+  being guessed. Legacy proportional boxes are not displayed as PDF overlays.
+- A limited instruction-without-heading pattern is recognized and flagged for
+  review. Explicit exercise references are used to associate answer keys when
+  unambiguous; ambiguous repeated numbers remain unverified. Parsed keys have
+  not been human-verified. Old persisted answer-key associations are not audited.
+- Local Tesseract extraction, when installed, records word and line geometry and
+  confidence. Short or low-confidence OCR remains pending; OCR answer keys and
+  OCR blank positions are not treated as verified. Browser OCR remains opt-in.
+- Detected matching pairs are not automatically graded as correct just because
+  of their inferred layout. Overlay edits are queued for autosave in the UI;
+  this UI path still needs browser verification.
+- Automated backend suite: **96 tests passed locally** (SQLite, mock PostgreSQL
+  DDL test; no real PostgreSQL integration test). Production frontend build,
+  proxy test, and pure reader geometry tests passed locally. Generated PDF API
+  smoke through a local Next proxy and local FastAPI: 13 checks passed; this was
+  not browser E2E, real storage, or a real textbook.
 
-### 3. PDF Interaktiv Tahlil va Grading
-- [x] PDF.js va PyMuPDF yordamida original sahifa koordinatalari (`bbox`) bo'yicha interaktiv bo'shliqlar joylashtiriladi.
-- [x] Skanerlangan sahifalar uchun OCR holati haqiqiy va xolis ko'rsatiladi.
-- [x] Qayta tahlil qilinganda ma'lumotlar xavfsiz transactional tarzda qayta tiklanadi.
-- [x] Baholash ustuvorligi: Kitob javoblar kaliti > Deterministik qoidalar > AI baholash > Tekshirilmagan (unverified).
-- [x] Ko'p bo'shliqli mashqlar va muqobil to'g'ri javoblar to'liq qo'llab-quvvatlanadi.
+## Important remaining work
 
-### 4. Vocabulary, Spaced Repetition (SM-2) & Revision
-- [x] Kitobdagi barcha so'zlar to'liq qamrab olinadi va kontekstiga qarab ajratiladi.
-- [x] 6 xil savol turlari, aralashtirilgan variantlar va majburiy yozma eslab qolish.
-- [x] Xato qilingan so'zlar avtomatik ravishda dars oxiriga qayta qo'shiladi (`requeued_item`).
-- [x] SM-2 algoritmi: qiyin yoki xato qilingan so'zlarda interval 0 ga tushib darhol qayta navbatga qo'yiladi.
-- [x] Server-side deterministik baholanadigan maxsus takrorlash sessiyalari (`revision sessions`).
+- Browser and real-device E2E for overlay position, edits, focus, zoom, rotation,
+  scroll and resume; scanned/mixed and real textbook workflows remain unverified.
+- Versioned analysis staging, stable question mapping, manual corrections and
+  migration of unmappable student work; existing books cannot be re-analyzed.
+- General multi-column, tables, diagrams, vector-drawn blanks, multiple-page
+  exercises, headingless numbered content, reading and matching reconstruction.
+- Browser OCR word boxes/rotation, OCR blank detection, Uzbek OCR data, scan
+  quality evaluation, and accurate page-by-page completion reporting.
+- Review interface, human verification of answer keys, partial scoring, and
+  auditing previously parsed answer keys. Some historical `key` associations
+  can be incorrect and need review before being trusted.
+- Placement assessment and level-adapted vocabulary are not implemented.
+- Optional vision page understanding is not implemented; no page images are sent
+  to an AI service by this milestone. Do not enable external image processing
+  without explicit consent and cost/privacy review.
+- Durable job processing, monitoring and recovery, production storage verification,
+  real PostgreSQL integration, deployment environment isolation and security
+  dependency upgrades. `npm ci` reported 15 vulnerabilities (2 critical).
 
-### 5. Progress, Dashboard & Frontend
-- [x] Heartbeat vaqt hisobi: soxtalashtirishdan himoyalangan (ko'pi bilan 60s/so'rov, kuniga 10 soat limit), foydalanuvchi profilidagi vaqt zonasi (`timezone`) hisobga olinadi.
-- [x] Frontend to'liq TypeScript va Next.js 14 optimallashtirilgan holatda qurilgan (0 xato).
-- [x] Barcha sahifalar, dark/light rejim, PWA manifest va offline pdf.worker to'liq ishlaydi.
+## Deployment
 
-### 6. Testlar va Sifat Kafolati
-- [x] **Backend Pytest to'plami: 63/63 PASS (100%)**
-- [x] **E2E Smoke: 13/13 PASS (100%)**
-- [x] **Frontend Build: 14/14 static va dynamic routelar muvaffaqiyatli qurildi**
-- [x] **GitHub Actions CI workflow: `.github/workflows/ci.yml` yaratildi**
-
-## ⚠️ Muhit cheklovlari (halol holat)
-
-| Cheklov | Holat | Yechni |
-|---|---|---|
-| AI kalitlari yo'q | Deterministik tahlil/grading ishlaydi; tutor/ochiq baholash/tarjima 503 `AI_NOT_CONFIGURED` | `.env` ga kalit qo'yish kifoya — kod to'liq tayyor |
-| Tesseract binary yo'q | Skaner sahifalar ochiq warning bilan o'tkazib yuboriladi | `apt install tesseract-ocr` + `pip install pytesseract` |
-| Redis/Celery yo'q (sandbox) | `TASK_BACKEND=inline` (thread-pool) ishlaydi | Prod: `TASK_BACKEND=celery` + `REDIS_URL` |
-| SQLite (sandbox dev) | PostgreSQL bilan bir xil modellar; `DATABASE_URL` almashadi | Supabase pooler URL |
-| Supabase credentials yo'q | Lokal storage backend ishlaydi; Supabase Storage adapteri kodda tayyor | `STORAGE_BACKEND=supabase` + keylar |
-| VoIP mikrofon preview iframe'da bloklangan | STT real browser/deployda ishlaydi, previewda tugma ko'rinmaydi | — |
-
-## 🧪 Kerakli tashqi credentiallar (ishlatish uchun ixtiyoriy)
-
-| Env | Maqsad | Bo'lmasa |
-|---|---|---|
-| `AI_PROVIDER`+`AI_API_KEY`+`AI_MODEL` | Tutor, ochiq javollar bahosi, tarjimalar, grammatika tushuntirishlari | Deterministik rejim (qolgan hammasi ishlaydi) |
-| `DATABASE_URL` | Prod: Supabase PostgreSQL | SQLite (dev) |
-| `SUPABASE_URL`+`SUPABASE_SERVICE_KEY` | Supabase Storage (private bucket) | Lokal disk storage |
-| `SMTP_*` | Parol tiklash emaili | Dev rejimda havola UI'da ko'rsatiladi |
-| `REDIS_URL` | Celery queue + distributed rate limit | Inline thread pool |
-
-## 🔜 Keyingi qadamlar (tavsiya)
-1. Production deploy (VPS yoki Railway/Fly) + Supabase Postgres ulash
-2. AI kalit ulash → tutor va tarjimalarni yoqish
-3. Tesseract o'rnatish → skaner kitoblar
-4. Kelajakda: React Native ilova (shu API ustidan), to'lov provayderi (subscription schema tayyor), qo'shimcha tillar
+No database migration is included. Vercel deployment metadata reported current
+main `ef00a52` as READY and selected Supabase DB/storage services as healthy;
+this is not proof that production credentials, upload, OCR, workers, or a real
+user workflow work. Production was not changed by this milestone. See
+`docs/WORKBOOK_AUDIT.md` and `docs/DEPLOYMENT.md` before any deployment.

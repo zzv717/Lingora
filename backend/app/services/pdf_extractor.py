@@ -51,28 +51,45 @@ def validate_and_open(content: bytes) -> fitz.Document:
 
 
 def _extract_lines(page: fitz.Page) -> list[dict[str, Any]]:
+    """Native glyph boxes in unrotated, crop-relative PDF points (top-left origin).
+
+    Each entry in ``chars`` corresponds to exactly one codepoint in ``text``.
+    Missing glyph geometry must never become an overlay location.
+    """
     lines: list[dict[str, Any]] = []
     try:
-        raw = page.get_text("dict")
+        raw = page.get_text("rawdict")
     except Exception:
         return lines
     for block in raw.get("blocks", []):
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
-            spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
-            if not spans:
-                continue
-            text = " ".join(s["text"].strip() for s in spans).strip()
+            text_parts: list[str] = []
+            chars: list[list[float] | None] = []
+            sizes = []
+            fonts = []
+            for span in line.get("spans", []):
+                for char in span.get("chars", []):
+                    value = char.get("c", "")
+                    box = char.get("bbox")
+                    for c in value:
+                        text_parts.append(c)
+                        chars.append([round(v, 2) for v in box] if box else None)
+                sizes.append(span.get("size", 10.0))
+                fonts.append(span.get("font", ""))
+            text = "".join(text_parts)
+            left = len(text) - len(text.lstrip())
+            right = len(text.rstrip())
+            text = text[left:right]
+            chars = chars[left:right]
             if not text:
                 continue
-            sizes = [s.get("size", 10.0) for s in spans]
-            fonts = " ".join({s.get("font", "") for s in spans})
             lines.append({
-                "text": text,
+                "text": text, "chars": chars,
                 "bbox": [round(v, 2) for v in line["bbox"]],
-                "size": round(max(sizes), 2),
-                "bold": any("bold" in f.lower() or "black" in f.lower() for f in fonts.split()),
+                "size": round(max(sizes, default=10.0), 2),
+                "bold": any("bold" in f.lower() or "black" in f.lower() for f in fonts),
                 "x0": round(line["bbox"][0], 2),
             })
     lines.sort(key=lambda l: (round(l["bbox"][1], 1), l["bbox"][0]))
@@ -107,19 +124,52 @@ def ocr_available() -> bool:
     return _TESS_AVAILABLE
 
 
-def ocr_page(page: fitz.Page, dpi: int = 200) -> str:
-    """Rasterize + OCR one page. Returns '' if OCR is unavailable (callers report honestly)."""
+def ocr_page_lines(page: fitz.Page, dpi: int = 200) -> list[dict[str, Any]]:
+    """Tesseract word/line boxes mapped back to unrotated crop-relative PDF points.
+
+    Word boxes are retained for inspection; they are not character-level blank geometry.
+    """
     if not ocr_available():
-        return ""
+        return []
     import pytesseract
     from PIL import Image
 
     pix = page.get_pixmap(dpi=dpi)
     img = Image.open(io.BytesIO(pix.tobytes("png")))
     try:
-        return pytesseract.image_to_string(img, lang="eng+uzb")
-    except pytesseract.TesseractError:
-        return pytesseract.image_to_string(img, lang="eng")
+        try:
+            data = pytesseract.image_to_data(img, lang="eng+uzb", output_type=pytesseract.Output.DICT)
+        except pytesseract.TesseractError:
+            data = pytesseract.image_to_data(img, lang="eng", output_type=pytesseract.Output.DICT)
+    except (pytesseract.TesseractError, RuntimeError):
+        log.warning("Local OCR failed on page %s", page.number + 1)
+        return []
+    scale = dpi / 72.0
+    groups: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+    for i, raw in enumerate(data.get("text", [])):
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            conf = float(data["conf"][i])
+            x, y = data["left"][i] / scale, data["top"][i] / scale
+            w, h = data["width"][i] / scale, data["height"][i] / scale
+            rect = fitz.Rect(x, y, x + w, y + h) * page.derotation_matrix
+            box = [round(v, 2) for v in rect]
+            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        except (ValueError, TypeError, KeyError, IndexError):
+            continue
+        if conf < 0 or w <= 0 or h <= 0:
+            continue
+        groups.setdefault(key, []).append({"text": text, "bbox": box, "confidence": conf})
+    lines = []
+    for words in groups.values():
+        box = [min(w["bbox"][0] for w in words), min(w["bbox"][1] for w in words),
+               max(w["bbox"][2] for w in words), max(w["bbox"][3] for w in words)]
+        lines.append({"text": " ".join(w["text"] for w in words), "bbox": box, "words": words,
+                      "confidence": sum(w["confidence"] for w in words) / len(words),
+                      "size": 10.0, "bold": False, "x0": box[0]})
+    return lines
 
 
 def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], None] | None = None,
@@ -136,16 +186,16 @@ def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], Non
         ocr_used = False
         page_text = text
         if needs_ocr:
-            ocr_text = ocr_page(page)
-            if ocr_text.strip():
+            ocr_lines = ocr_page_lines(page)
+            ocr_text = "\n".join(line["text"] for line in ocr_lines)
+            confidence = sum(line.get("confidence", 0) for line in ocr_lines) / max(len(ocr_lines), 1)
+            if len(ocr_text.strip()) >= MIN_TEXT_CHARS_FOR_OCR and confidence >= 40:
                 page_text = ocr_text.strip()
                 ocr_used = True
                 needs_ocr = False
-                lines = [
-                    {"text": ln, "bbox": [0, 0, round(page.rect.width, 2), round(page.rect.height, 2)],
-                     "size": 10.0, "bold": False, "x0": 0}
-                    for ln in page_text.splitlines() if ln.strip()
-                ]
+                lines = ocr_lines
+                warnings.append({"page": i + 1, "code": "OCR_REVIEW_REQUIRED",
+                                 "message_uz": f"{i + 1}-sahifaning OCR matni tekshirilishi kerak."})
             else:
                 warnings.append({
                     "page": i + 1,
@@ -157,8 +207,8 @@ def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], Non
                 })
         pages.append({
             "page_number": i + 1,
-            "width": round(page.rect.width, 2),
-            "height": round(page.rect.height, 2),
+            "width": round(page.cropbox.width, 2),
+            "height": round(page.cropbox.height, 2),
             "text": page_text,
             "lines": lines,
             "images": _extract_images(page),
