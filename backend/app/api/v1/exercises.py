@@ -62,7 +62,7 @@ def _check_lesson_gate(db: Session, user: User, profile: Profile, lesson: Lesson
         return
 
     # Check if previous lesson has vocabulary
-    has_vocab = db.query(VocabularyWord.id).filter(VocabularyWord.lesson_id == prev_lesson.id).count() > 0
+    has_vocab = db.query(VocabularyWord.id).filter(VocabularyWord.lesson_id == prev_lesson.id, VocabularyWord.needs_translation.is_(False)).count() > 0
     if not has_vocab:
         return
 
@@ -331,7 +331,9 @@ def check_exercise(
     )
     n_correct = int(score)
     if max_score == 0:
-        feedback = "Javoblar saqlandi, lekin avtomatik baholash hozircha mavjud emas (AI sozlanmagan)."
+        feedback = ("Javoblar saqlandi, lekin ularni ishonchli avtomatik baholash hozircha mumkin bo'lmadi."
+                    if settings.ai_configured else
+                    "Javoblar saqlandi, lekin avtomatik baholash hozircha mavjud emas (AI sozlanmagan).")
     elif percent >= 90:
         feedback = f"Ajoyib natija! {n_correct}/{int(max_score)} to'g'ri. 🎉"
     elif percent >= 60:

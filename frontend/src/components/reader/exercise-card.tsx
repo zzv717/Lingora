@@ -169,15 +169,16 @@ export function ExerciseCard({
             <span className="font-bold text-slate-800 dark:text-slate-100">{exercise.ref || exercise.title}</span>
             <Badge tone="slate">{typeLabel(exercise.exercise_type)}</Badge>
             {exercise.topic && <Badge tone="brand">{exercise.topic}</Badge>}
-            {result && (
+            {result && (result.max_score === 0 ? <Badge tone="slate">Baholanmagan</Badge> : (
               <Badge tone={result.percent >= 80 ? "green" : result.percent >= 50 ? "amber" : "red"}>
-                {result.score}/{result.max_score} ({result.percent}%)
+                {result.score}/{result.max_score} ({result.percent}%) {result.uncertain ? "· qisman" : ""}
               </Badge>
-            )}
+            ))}
           </div>
           {exercise.instructions && (
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{exercise.instructions}</p>
           )}
+          {exercise.detection === "ocr" && <p className="mt-1 text-xs text-amber-600">OCR matni xato bo'lishi mumkin. Javob kaliti tasdiqlanmagan; tekshirish AI sozlangan bo'lsa matn va javobni AI xizmatiga yuborishi mumkin.</p>}
         </div>
         <div className="flex items-center gap-2">
           {savedStatus === "saving" && <span className="text-[11px] text-slate-400">saqlanmoqda…</span>}

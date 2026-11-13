@@ -376,3 +376,12 @@ class PlanOut(BaseModel):
 class OkOut(BaseModel):
     ok: bool = True
     message_uz: str = ""
+
+
+class OCRLineIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+
+
+class OCRPageIn(BaseModel):
+    lines: list[OCRLineIn] = Field(min_length=1, max_length=500)

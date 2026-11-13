@@ -99,7 +99,7 @@ def create_session(request: Request, book_id: str = "", lesson_id: str = "",
                 .order_by(Lesson.order_index.desc()).limit(1))
             if prev and profile.vocabulary_gating:
                 prev_vocab = db.query(VocabularyWord.id).filter(
-                    VocabularyWord.lesson_id == prev.id).count() > 0
+                    VocabularyWord.lesson_id == prev.id, VocabularyWord.needs_translation.is_(False)).count() > 0
                 lp = db.scalar(select(LearningProgress).where(
                     LearningProgress.user_id == user.id, LearningProgress.lesson_id == prev.id))
                 if prev_vocab and not (lp and lp.vocab_gate_passed):

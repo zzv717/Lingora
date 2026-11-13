@@ -93,7 +93,7 @@ export default function VocabularyPage() {
                 <p className="text-sm opacity-80">SM-2 jadvali bo'yicha bugun takrorlash kerak bo'lgan so'zlar</p>
               </div>
               <Button variant="secondary" className="!bg-white !text-brand-700" loading={starting}
-                onClick={() => startReview()} disabled={words.length === 0}>
+                onClick={() => startReview()} disabled={!words.some((w) => !w.needs_translation)}>
                 🔁 Takrorlash seansi
               </Button>
             </Card>
@@ -115,9 +115,9 @@ export default function VocabularyPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           {lp && !lp.vocab_gate_passed && lp.has_vocabulary && <Badge tone="amber">Test o'tilmagan</Badge>}
-                          {lp?.vocab_gate_passed && <Badge tone="green">✓ Test o'tilgan</Badge>}
+                          {lp?.vocab_gate_passed && lp.has_vocabulary && <Badge tone="green">✓ Test o'tilgan</Badge>}
                           <Button size="sm" variant={lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "primary" : "secondary"}
-                            loading={starting} onClick={() => startReview(l.id)}>
+                            loading={starting} disabled={!lw.some((w) => !w.needs_translation)} onClick={() => startReview(l.id)}>
                             {lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "🔑 Gatetestni topshirish" : "Test"}
                           </Button>
                         </div>
@@ -129,7 +129,7 @@ export default function VocabularyPage() {
                               <span className="font-semibold text-slate-800 dark:text-slate-100">{w.term}</span>
                               {w.part_of_speech && <Badge>{w.part_of_speech}</Badge>}
                             </div>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">{w.translation_uz}</p>
+                            <p className="text-sm text-slate-500 dark:text-slate-400">{w.needs_translation ? "Tarjima tekshirilmagan — testga kiritilmaydi" : w.translation_uz}</p>
                           </div>
                         ))}
                         {lw.length > 12 && (

@@ -23,6 +23,7 @@ from app.models import (
     Chapter,
     Exercise,
     ExerciseQuestion,
+    ExerciseOption,
     LearningProgress,
     Lesson,
     ProcessingJob,
@@ -30,7 +31,7 @@ from app.models import (
     User,
     VocabularyWord,
 )
-from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut
+from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
@@ -232,8 +233,11 @@ def reanalyze(book_id: str, request: Request, db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):
     limit(request, "reanalyze", 10, 3600, user.id)
     book = owned_book(db, user, book_id)
+    db.scalar(select(Book).where(Book.id == book.id).with_for_update())
     if book.status == "uploading":
         raise ApiError("UPLOAD_INCOMPLETE", "Fayl hali tekshirilmagan.", 409)
+    if db.scalar(select(BookPage.id).where(BookPage.book_id == book.id, BookPage.ocr_used.is_(True)).limit(1)):
+        raise ApiError("OCR_REANALYZE_UNSAFE", "Qayta tahlil OCR natijalari va javoblarni o'chirishi mumkin. Bu kitob uchun o'chirilgan.", 409)
     if book.status == "processing":
         raise ApiError("ALREADY_PROCESSING", "Kitob hozir tahlil qilinmoqda.", 409)
     job = ProcessingJob(book_id=book.id, user_id=user.id, status="queued",
@@ -259,7 +263,7 @@ def _lesson_locks(db: Session, book: Book, profile: Profile | None) -> tuple[dic
     prev_passed = True
     for i, l in enumerate(lessons):
         p = progresses.get(l.id)
-        has_vocab = db.query(VocabularyWord.id).filter(VocabularyWord.lesson_id == l.id).count() > 0
+        has_vocab = db.query(VocabularyWord.id).filter(VocabularyWord.lesson_id == l.id, VocabularyWord.needs_translation.is_(False)).count() > 0
         locked = gating and i > 0 and not prev_passed
         gate_ok = (not has_vocab) or bool(p.vocab_gate_passed if p else False)
         out[l.id] = {
@@ -306,6 +310,8 @@ def book_structure(book_id: str, db: Session = Depends(get_db), user: User = Dep
         "exercises": n_ex, "questions": n_q, "questions_with_key": n_with_key,
         "vocabulary": n_vocab, "pages_ocr_used": ocr_pages, "pages_with_warnings": warn_pages,
         "ocr_available": ocr_available(),
+        "pages_needing_ocr": int(db.query(BookPage.id).filter(BookPage.book_id == book.id,
+                                               BookPage.needs_ocr.is_(True)).count()),
     }
     return BookStructureOut(
         book=BookOut.model_validate(book),
@@ -330,3 +336,91 @@ def get_page(book_id: str, page_number: int, db: Session = Depends(get_db),
         blocks=page.blocks, images=page.images, needs_ocr=page.needs_ocr,
         ocr_used=page.ocr_used, has_warning=page.has_warning,
     )
+
+
+@router.get("/{book_id}/ocr/pending")
+def ocr_pending(book_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Return page numbers only; OCR itself runs in the user's browser."""
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tahlili hali yakunlanmagan.", 409)
+    return {"pages": list(db.scalars(select(BookPage.page_number).where(
+        BookPage.book_id == book.id, BookPage.needs_ocr.is_(True)).order_by(BookPage.page_number)).all())}
+
+
+@router.post("/{book_id}/ocr/pages/{page_number}")
+def save_browser_ocr(book_id: str, page_number: int, data: OCRPageIn, request: Request,
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Store one locally recognized page and append reviewable exercises; never replace existing work."""
+    from app.services.structure_detector import detect_structure
+    limit(request, "browser_ocr", 600, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    # Serialize with other imports for the same book on PostgreSQL.
+    db.scalar(select(Book).where(Book.id == book.id).with_for_update())
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tahlili hali yakunlanmagan.", 409)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book.id,
+                                            BookPage.page_number == page_number).with_for_update())
+    if not page:
+        raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
+    if not page.needs_ocr:
+        return {"already_processed": True, "exercises_added": 0, "words_added": 0}
+    lines = []
+    for item in data.lines:
+        x0, y0, x1, y1 = item.bbox
+        if not (0 <= x0 <= x1 <= page.width + 1 and 0 <= y0 <= y1 <= page.height + 1):
+            raise ApiError("INVALID_OCR", "Sahifa koordinatalari noto'g'ri.", 422)
+        lines.append({"text": item.text.strip(), "bbox": [x0, y0, x1, y1],
+                      "size": 10, "bold": False, "x0": x0})
+    text = "\n".join(line["text"] for line in lines)
+    if len(text.strip()) < 24:
+        raise ApiError("OCR_TOO_LITTLE_TEXT", "Sahifadan yetarli matn ajratilmadi; keyin qayta urinib ko'ring.", 422)
+    structure = detect_structure([{"page_number": page_number, "width": page.width,
+                                  "height": page.height, "text": text, "lines": lines}])
+    lesson = db.scalar(select(Lesson).where(Lesson.book_id == book.id,
+                     Lesson.page_start <= page_number, Lesson.page_end >= page_number)
+                     .order_by(Lesson.order_index).limit(1))
+    count = 0
+    for ex in structure.exercises:
+        if not ex.questions:
+            continue
+        row = Exercise(book_id=book.id, lesson_id=lesson.id if lesson else None,
+                       chapter_id=lesson.chapter_id if lesson else None,
+                       exercise_type=ex.exercise_type, title=ex.title, instructions=ex.instructions,
+                       ref=ex.ref, page_number=page_number, source="book", topic=ex.topic,
+                       order_index=page_number * 100 + count, detection="ocr", needs_review=True)
+        db.add(row)
+        db.flush()
+        for qi, q in enumerate(ex.questions):
+            # OCR coordinates/answers can be unreliable: show editable cards, not PDF overlays or invented keys.
+            blanks = [{**b, "bbox": None} for b in q.blanks]
+            if ex.exercise_type == "fill_blank" and not blanks:
+                blanks = [{"id": "b1", "bbox": None}]
+            question = ExerciseQuestion(exercise_id=row.id, order_index=qi, number=q.number,
+                     prompt=q.prompt, blanks=blanks, matching_pairs=q.matching_pairs,
+                     correct_answers=[], answer_source="unknown", needs_review=True)
+            db.add(question)
+            db.flush()
+            for option in q.options:
+                db.add(ExerciseOption(question_id=question.id, letter=option["letter"], text=option["text"]))
+        count += 1
+    existing = {w.lower() for w in db.scalars(select(VocabularyWord.term).where(VocabularyWord.book_id == book.id)).all()}
+    words_added = 0
+    for v in structure.vocabulary:
+        term = v["term"].strip()[:255]
+        if not term or term.lower() in existing:
+            continue
+        # A dash in an English book may be a definition rather than an Uzbek translation.
+        db.add(VocabularyWord(book_id=book.id, lesson_id=lesson.id if lesson else None,
+               chapter_id=lesson.chapter_id if lesson else None, term=term,
+               translation_uz="", definition_en=v.get("translation_uz", "")[:2000],
+               page_number=page_number, source="book", needs_translation=True))
+        existing.add(term.lower())
+        words_added += 1
+    page.text = text[:60000]
+    page.blocks = lines
+    page.needs_ocr = False
+    page.ocr_used = True
+    page.has_warning = True  # OCR output always requires review.
+    db.commit()
+    return {"already_processed": False, "exercises_added": count, "words_added": words_added}

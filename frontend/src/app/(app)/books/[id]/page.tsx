@@ -6,6 +6,7 @@ import { get } from "@/lib/api";
 import type { Structure, VocabWord, Job } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
+import { BrowserOCR } from "@/components/reader/browser-ocr";
 
 const TYPE_LABELS: Record<string, string> = {
   fill_blank: "Bo'sh joy",
@@ -95,11 +96,9 @@ export default function BookDetailPage() {
               </Button>
             </div>
           </div>
-          {!cov.ocr_available && (
-            <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-              ℹ️ Skanerlangan kitoblar uchun OCR serverda sozlanmagan. Matnli PDF'lar to'liq ishlaydi.
-            </p>
-          )}
+          <BrowserOCR bookId={id} pending={cov.pages_needing_ocr || 0} onUpdate={() => {
+            get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});
+          }} />
         </Card>
 
         {/* chapters & lessons */}

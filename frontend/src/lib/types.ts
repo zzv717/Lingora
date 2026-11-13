@@ -90,6 +90,7 @@ export interface Structure {
     questions_with_key: number;
     vocabulary: number;
     pages_ocr_used: number;
+    pages_needing_ocr: number;
     pages_with_warnings: number;
     ocr_available: boolean;
   };

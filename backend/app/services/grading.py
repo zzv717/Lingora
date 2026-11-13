@@ -106,6 +106,9 @@ def grade_question_deterministic(q: ExerciseQuestion, answer: dict) -> tuple[boo
             return None, given  # no key: cannot know the expected truth value
         return None, given
     if etype == "matching":
+        # OCR pair extraction is a guess, not an answer key.
+        if q.exercise.detection == "ocr":
+            return None, str(answer.get("pairs") or {})
         pairs = q.matching_pairs or []
         given_pairs = answer.get("pairs") or {}
         if not pairs:
