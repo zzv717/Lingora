@@ -152,7 +152,7 @@ export default function SettingsPage() {
             </div>
             <ul className="space-y-1.5 text-sm text-slate-600 dark:text-slate-300">
               <li>📚 Kitoblar: {plan.max_books} tagacha</li>
-              <li>🤖 AI so'rovlari: kuniga {plan.ai_calls_per_day} (bugun: {plan.ai_calls_today})</li>
+              <li>🤖 AI so'rovlari: {plan.ai_calls_per_day > 0 ? `kuniga ${plan.ai_calls_per_day}` : "kunlik so'rov limiti yo'q"} (bugun: {plan.ai_calls_today})</li>
               <li>{plan.ai_configured ? "✅ AI xizmati faol" : "⚠️ AI xizmati sozlanmagan (deterministik tahlil ishlaydi)"}</li>
             </ul>
             <p className="mt-3 text-xs text-slate-400">
