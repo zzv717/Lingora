@@ -7,9 +7,10 @@ import { PdfViewer } from "./pdf-viewer";
 import { Translator, type TranslationSeed } from "./translator";
 import { usePdfPictureCrops, validPicture, type PictureRegion } from "./pdf-picture-crops";
 import { PictureSelector } from "./picture-selector";
+import { isPictureExercise } from "./auto-picture-locations";
 
 export type PreviewExerciseData = { number: string; instruction: string; exercise_type: string; context: string; uncertainty: string;
-  evidence_pages: number[]; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[]; picture?: PictureRegion | null }[] };
+  evidence_pages: number[]; depends_on_picture?: boolean; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[]; picture?: PictureRegion | null }[] };
 type Feedback = { index: number; correct: boolean | null; explanation_uz: string };
 
 export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPicturesChange, defaultShowPage = false, active = true, externalBusy = false }: {
@@ -39,8 +40,7 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPictur
   const [pictureConsent, setPictureConsent] = useState(false);
   const [locating, setLocating] = useState(false);
   const [pictureMessage, setPictureMessage] = useState("");
-  const pictureExercise = /\b(picture|pictures|image|images|illustration|photo|photos|drawings)\b|rasm/i.test(ex.instruction) ||
-    ex.questions.some((q) => !!validPicture(q, pages) || /^[.\s_…-]*$/.test(q.prompt));
+  const pictureExercise = isPictureExercise(ex, pages);
   const missingPictures = pictureExercise && ex.questions.some((q) => !validPicture(q, pages));
   async function locatePictures() {
     if (!pictureConsent || locating || busy || externalBusy || !onPicturesChange) return;

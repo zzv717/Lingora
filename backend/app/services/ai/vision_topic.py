@@ -52,6 +52,7 @@ class Exercise(BaseModel):
     instruction: str = Field(max_length=2000)
     exercise_type: Literal['cloze', 'multiple_choice', 'transformation', 'error_correction', 'matching', 'categorization', 'dialogue', 'writing', 'speaking', 'other']
     context: str = Field(max_length=5000)
+    depends_on_picture: bool = False
     evidence_pages: list[int] = Field(min_length=1, max_length=5)
     questions: list[Question] = Field(max_length=60)
     uncertainty: str = Field(max_length=1000)
@@ -81,7 +82,10 @@ one-based PDF image page numbers for each theory, exercise, and question. Keep o
 never invent unreadable questions, keys, missing context or material based on book memory. This
 is a partial sample, not full topic analysis. Explicitly flag ambiguities, missing illustrations,
 and possible continuations outside provided pages. Do not solve or provide any answer keys.
-For a numbered question that clearly refers to one individual picture, provide picture with its
+Set depends_on_picture true for exercises whose answers require any illustration, including
+numbered pictures with empty question text or instructions such as "look and write". Set false
+for ordinary textual blanks, dialogues and passages without images. For a numbered question that
+clearly refers to one individual picture, provide picture with its
 actual one-based PDF page and bbox [left, top, right, bottom] in 0–1000 relative page coordinates:
 (0,0) is the TOP LEFT of the displayed page, (1000,1000) is the BOTTOM RIGHT. Include the full
 illustration but not neighbouring pictures. Match the printed item number carefully. If location,
@@ -89,7 +93,7 @@ association or page is uncertain, or the picture is shared, use null; never inve
 The region is just a proposed crop from the original page, not an image or description.
 JSON: {"topic":"", "theory":[{"text":"", "evidence_pages":[1]}], "exercises":[{"number":"",
 "instruction":"", "exercise_type":"cloze|multiple_choice|transformation|error_correction|matching|categorization|dialogue|writing|speaking|other",
-"context":"", "evidence_pages":[1], "questions":[{"number":"", "prompt":"", "options":[],
+"context":"", "depends_on_picture":false, "evidence_pages":[1], "questions":[{"number":"", "prompt":"", "options":[],
 "evidence_pages":[1], "picture":{"page":1,"bbox":[100,100,300,300]}}], "uncertainty":""}], "warnings":[]}.
 picture may be null. Unknown strings must be empty."""
 
