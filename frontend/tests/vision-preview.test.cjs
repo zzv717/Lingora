@@ -15,7 +15,7 @@ let identity = 'user1';
 const ui = { Button: ({ children, variant, size, ...props }) => React.createElement('button', props, children) };
 let fail = false;
 let response = { verdicts: [{ index: 0, correct: true, explanation_uz: 'Izoh' }] };
-const mockApi = { post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return response; } };
+const mockApi = { post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return url === '/tutor/translate' ? { translation: 'Olma' } : response; } };
 function load(file, extra) {
   const source = fs.readFileSync(file, 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
@@ -31,7 +31,8 @@ function load(file, extra) {
   vm.runInThisContext(`(function(require,module,exports){${code}\n})`, { filename: file })(mocked, module, module.exports);
   return module.exports;
 }
-const preview = load('src/components/reader/preview-exercise.tsx');
+const translator = load('src/components/reader/translator.tsx');
+const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator });
 const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview });
 const topic = { title: 'Articles', page_start: 1, page_end: 2, evidence_pages: [1], content_types: ['exercise'], uncertainty: '' };
 const result = { sampled_pages: [1, 2], provider: 'mock', model: 'test', warnings: [], theory: [], exercises: [
@@ -109,7 +110,36 @@ async function main() {
   assert.match(summary.textContent, /To'g'ri: 1 · Xato: 1 · Noaniq: 1 · Javob berilmagan: 1/);
   assert.match(summary.textContent, /Jami: 4 ta savol/);
   assert.match(container.textContent, /Javob kiritilmagan/);
+  assert.equal(container.querySelector('[role=progressbar]').getAttribute('aria-valuenow'), '3');
+  await click(button("Ko'rsatmani tarjima qilish"));
+  const translatorInput = [...container.querySelectorAll('textarea')][0];
+  assert.equal(translatorInput.value, 'Look');
+  assert.equal(button('Tarjima qilish').disabled, true);
+  const translationConsent = [...container.querySelectorAll('label')].find((l) => l.textContent.includes('Faqat yuqoridagi matn')).querySelector('input');
+  await click(translationConsent);
+  await click(button('Tarjima qilish'));
+  assert.equal(calls.at(-1).url, '/tutor/translate');
+  assert.equal(calls.at(-1).body.text, 'Look');
+  assert.equal(calls.at(-1).body.direction, 'en-uz');
+  assert.equal(calls.at(-1).body.consent_text_to_provider, true);
+  assert.match(container.textContent, /Olma/);
+  assert.equal(container.querySelector('[aria-label="Mashq natijasi"]').textContent.includes("To'g'ri: 1"), true);
+  await click(container.querySelector('[aria-label="Tarjima yo\'nalishini almashtirish"]'));
+  assert.doesNotMatch(container.textContent, /Olma/);
+  await click(button('Tarjima qilish'));
+  assert.equal(calls.at(-1).body.direction, 'uz-en');
   await act(async () => root.unmount());
-  console.log('Vision preview local persistence, image viewer, consent, feedback and summary smoke tests passed');
+  function ChoiceHarness() {
+    const [values, setValues] = React.useState(['']);
+    return React.createElement(preview.PreviewExercise, { bookId: 'book', ex: { ...exercise, exercise_type: 'multiple_choice', questions: [{ number: '1', prompt: 'Choose', options: ['A) apple', 'B) orange'], evidence_pages: [2] }] }, pages: [2], answers: values, onChange: setValues });
+  }
+  root = createRoot(container);
+  await act(async () => root.render(React.createElement(ChoiceHarness)));
+  await click(button('B) orange'));
+  assert.equal(container.querySelector('textarea').value, 'B) orange');
+  assert.equal(button('B) orange').getAttribute('aria-pressed'), 'true');
+  assert.equal(container.querySelector('[role=progressbar]').getAttribute('aria-valuenow'), '1');
+  await act(async () => root.unmount());
+  console.log('Vision preview local persistence, image viewer, consent, feedback, summary, translator and choice smoke tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });
