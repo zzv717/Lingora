@@ -14,7 +14,8 @@ const calls = [];
 let identity = 'user1';
 const ui = { Button: ({ children, variant, size, ...props }) => React.createElement('button', props, children) };
 let fail = false;
-const mockApi = { post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return { verdicts: [{ index: 0, correct: true, explanation_uz: 'Izoh' }] }; } };
+let response = { verdicts: [{ index: 0, correct: true, explanation_uz: 'Izoh' }] };
+const mockApi = { post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return response; } };
 function load(file, extra) {
   const source = fs.readFileSync(file, 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
@@ -64,11 +65,13 @@ async function main() {
   assert.equal(calls[0].body.consent_to_provider, true);
   assert.equal(calls[0].body.questions[0].answer, 'an apple');
   assert.match(container.textContent, /AI: to'g'ri/);
+  assert.match(container.textContent, /To'g'ri: 1 · Xato: 0 · Noaniq: 0 · Javob berilmagan: 0/);
   await act(async () => {
     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(text, 'a apple');
     text.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
   assert.doesNotMatch(container.textContent, /AI: to'g'ri/);
+  assert.equal(container.querySelector('[aria-label="Mashq natijasi"]'), null);
   await act(async () => root.unmount());
   root = createRoot(container);
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
@@ -89,6 +92,24 @@ async function main() {
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
   assert.equal(container.querySelector('textarea'), null);
   await act(async () => root.unmount());
-  console.log('Vision preview local persistence, image viewer, consent and feedback smoke tests passed');
+  // Count answered correct/wrong/uncertain separately from an unanswered item.
+  fail = false;
+  response = { verdicts: [true, false, null, false].map((correct, index) => ({ index, correct, explanation_uz: '' })) };
+  const exercise = { ...result.exercises[0], questions: Array.from({ length: 4 }, (_, i) => ({ number: String(i + 1), prompt: '', options: [], evidence_pages: [2] })) };
+  function SummaryHarness() {
+    const [values, setValues] = React.useState(['one', 'two', 'three', '']);
+    return React.createElement(preview.PreviewExercise, { bookId: 'book', ex: exercise, pages: [1, 2], answers: values, onChange: setValues });
+  }
+  root = createRoot(container);
+  await act(async () => root.render(React.createElement(SummaryHarness)));
+  assert.equal(container.querySelector('[aria-label="Mashq natijasi"]'), null);
+  await click([...container.querySelectorAll('label')].find((l) => l.textContent.includes('ushbu mashq javoblarim')).querySelector('input'));
+  await click(button('AI bilan tekshirish'));
+  const summary = container.querySelector('[aria-label="Mashq natijasi"]');
+  assert.match(summary.textContent, /To'g'ri: 1 · Xato: 1 · Noaniq: 1 · Javob berilmagan: 1/);
+  assert.match(summary.textContent, /Jami: 4 ta savol/);
+  assert.match(container.textContent, /Javob kiritilmagan/);
+  await act(async () => root.unmount());
+  console.log('Vision preview local persistence, image viewer, consent, feedback and summary smoke tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });
