@@ -1,0 +1,9 @@
+# Vision mavzu sinovida PDF va javoblar
+
+Mavzu xaritasi va mavzu sahifalari hali **qisman AI sinovi**, to'liq dars emas. Har bir ajratilgan mashqda «Asl PDF va rasmlarni ko'rish» tanlansa, kitobning asl PDF sahifasi PDF.js orqali ko'rsatiladi (alohida rasm qirqimi emas). PDF sahifa raqamlari bosma raqamlardan farq qilishi mumkin. AI ajratgan savollar asl kitob bilan mosligini foydalanuvchi tekshirishi kerak.
+
+Xarita, mavzu sinovi va javoblar faqat shu brauzerning localStorage xotirasida, foydalanuvchi va kitob bo'yicha saqlanadi. Serverdagi dars/StudentAnswer yozuvlariga qo'shilmaydi, qurilmalar o'rtasida sinxronlashmaydi; brauzer xotirasi tozalansa yo'qoladi. Umumiy qurilmada boshqa odam xotiradagi ma'lumotni ko'rishi mumkin. Mavzu natijasida mahalliy ma'lumotni o'chirish tugmasi bor. Saqlash muvaffaqiyatsiz bo'lsa xabar ko'rsatiladi. Bitta mavzuni qayta sinash uning oldingi mahalliy natijasi va javoblarini almashtiradi.
+
+«AI bilan tekshirish» alohida rozilik talab qiladi: tanlangan barcha (1–5) PDF sahifalarining rasmlari va ushbu mashqning matni/javoblari sozlangan tashqi provayderga yuboriladi. Oddiy AI kunlik kvotasi va provayderning tariflari hamda maxfiylik shartlari amal qiladi. Har safar bittadan mashq tekshiriladi. Natija faqat taxminiy AI fikri, javob kaliti yoki rasmiy baho emas. Bo'sh javoblar, kelmagan javoblar va model noaniq/past ishonch bildirganlari baholanmaydi. Modelning o'z ishonch bahosi xatodan himoya kafolati emas. Natijalar saqlanmaydi, javob o'zgarsa eskirgan fikr ko'rsatilmaydi.
+
+Bu funksiya avvalgi vaqtinchalik oynaga tegishli; alohida saqlangan Vision mashqlari uchun mavjud tekshiruvchi rasm kontekstini hali olmaydi. To'liq serverda saqlanadigan moslashuvchan dars, ishonchli kalitlar, aniq rasm qirqimlari va haqiqiy kitob/model bilan aniqlik sinovlari hali qilinmagan. Hech qanday ommaviy skan boshlanmaydi.
