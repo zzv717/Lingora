@@ -78,8 +78,10 @@ class Settings(BaseSettings):
     ai_vision_model: str = ""      # optional model with image input, used for scanned-page OCR assist
     ai_timeout_seconds: int = 60
     ai_max_retries: int = 2
-    ai_daily_token_limit: int = 0  # 0 = unlimited (per user, per day)
-    vision_exercise_pages_per_day: int = 150  # pages a user may scan with vision AI per day; 0 = unlimited
+    # Temporarily disable application-level daily request/page quotas; set true to restore them.
+    ai_daily_request_limits_enabled: bool = False
+    ai_daily_token_limit: int = 0  # Separate token safety cap, 0 = unlimited (per user, per day)
+    vision_exercise_pages_per_day: int = 150  # applied only when daily request limits are enabled
 
     # --- Plan limits (subscription-ready; MVP is free, no payments anywhere) ---
     free_max_books: int = 3
@@ -122,11 +124,14 @@ class Settings(BaseSettings):
         return self.ai_provider != "none" and bool(self.ai_api_key) and bool(self.ai_model)
 
     def plan_limits(self, plan: str) -> dict:
-        return {
+        limits = {
             "free": {"max_books": self.free_max_books, "ai_calls_per_day": self.free_ai_calls_per_day},
             "pro": {"max_books": self.pro_max_books, "ai_calls_per_day": self.pro_ai_calls_per_day},
             "premium": {"max_books": self.premium_max_books, "ai_calls_per_day": self.premium_ai_calls_per_day},
         }.get(plan, {"max_books": self.free_max_books, "ai_calls_per_day": self.free_ai_calls_per_day})
+        if not self.ai_daily_request_limits_enabled:
+            limits["ai_calls_per_day"] = 0  # API convention: 0 means unlimited.
+        return limits
 
     def validate_production_security(self) -> None:
         """Crash on startup in production if secret key is insecure or placeholder."""

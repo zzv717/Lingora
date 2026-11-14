@@ -32,8 +32,7 @@ Body: `{"consent_images_to_provider": true, "replace": false}`. Rozilik bo'lmasa
 `replace=true` faqat avvalgi *vision* mashqlarni almashtiradi va ularda foydalanuvchi javoblari bo'lsa rad etadi.
 
 ## Limit
-Alohida kunlik limit (`VISION_EXERCISE_PAGES_PER_DAY`) qo'llanadi; umumiy 20/300/2000 AI chaqiruv limitidan
-hisoblanmaydi, chunki 100 betli kitob uni bir zumda tugatib qo'yar edi.
+Ilovaning kunlik AI so'rov va Vision sahifa limitlari hozircha o'chirilgan. `AI_DAILY_REQUEST_LIMITS_ENABLED=true` qilib qayta yoqish mumkin; shunda alohida `VISION_EXERCISE_PAGES_PER_DAY` limiti qo'llanadi va u umumiy 20/300/2000 AI chaqiruv limitidan hisoblanmaydi. Foydalanish hisobga olinadi. Alohida token limiti sozlangan bo'lsa, qisqa vaqtli so'rov limitlari va AI provayderining kvotalari hamon amal qiladi.
 
 ## Cheklovlar
 - Rasmga tayanadigan mashqlarning ("Look at the picture...") savollari qisqa bo'ladi; rasm sahifada qoladi.

@@ -68,6 +68,9 @@ def ai_tokens_today(db: Session, user_id: str) -> int:
 
 
 def enforce_ai_quota(db: Session, user_id: str, feature: str) -> None:
+    if not settings.ai_daily_request_limits_enabled:
+        _enforce_token_quota(db, user_id, feature)
+        return
     plan = get_user_plan(db, user_id)
     limits = settings.plan_limits(plan)
     used_calls = ai_calls_today(db, user_id)
@@ -114,16 +117,17 @@ def feature_calls_today(db: Session, user_id: str, feature: str) -> int:
 def enforce_feature_quota(db: Session, user_id: str, feature: str, daily_limit: int) -> None:
     """Separate daily limit for one heavy feature (e.g. whole-book vision scanning).
 
-    The general per-plan call limit is intentionally not applied here: scanning a 100-page book would
-    exhaust a 20-calls-per-day plan limit after 20 pages. daily_limit <= 0 means unlimited.
-    The global daily token limit (if configured) still applies.
+    When daily request limits are enabled, bulk scans use this separate allowance instead of
+    the general per-plan call limit. daily_limit <= 0 means unlimited. The separate global
+    daily token limit (if configured) still applies even while request limits are disabled.
     """
-    used = feature_calls_today(db, user_id, feature)
-    if daily_limit > 0 and used >= daily_limit:
-        raise ApiError(
-            code="AI_FEATURE_QUOTA_EXCEEDED",
-            message_uz=f"Bugungi sahifa tahlili limitiga yetdingiz ({used}/{daily_limit}). Limit ertaga yangilanadi.",
-            http_status=429,
-            details={"feature": feature, "used": used, "limit": daily_limit},
-        )
+    if settings.ai_daily_request_limits_enabled and daily_limit > 0:
+        used = feature_calls_today(db, user_id, feature)
+        if used >= daily_limit:
+            raise ApiError(
+                code="AI_FEATURE_QUOTA_EXCEEDED",
+                message_uz=f"Bugungi sahifa tahlili limitiga yetdingiz ({used}/{daily_limit}). Limit ertaga yangilanadi.",
+                http_status=429,
+                details={"feature": feature, "used": used, "limit": daily_limit},
+            )
     _enforce_token_quota(db, user_id, feature)

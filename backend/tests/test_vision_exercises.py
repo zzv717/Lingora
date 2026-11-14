@@ -142,6 +142,7 @@ def test_page_without_exercises_is_marked_done_with_text(client, db, monkeypatch
 def test_separate_daily_quota_and_general_quota_untouched(client, db, monkeypatch):
     h, book, _, _ = setup_scan(client, db)
     setup(monkeypatch, [page_output(), page_output("95")])
+    monkeypatch.setattr(settings, "ai_daily_request_limits_enabled", True)
     monkeypatch.setattr(settings, "vision_exercise_pages_per_day", 1)
     ok = {"consent_images_to_provider": True}
     assert client.post(url(book, 1), headers=h, json=ok).status_code == 200
