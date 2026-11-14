@@ -16,7 +16,8 @@ const ui = { Button: ({ children, variant, size, ...props }) => React.createElem
 let fail = false;
 let response = { verdicts: [{ index: 0, correct: true, explanation_uz: 'Izoh' }] };
 let topicResponse;
-const mockApi = { getAccessToken: () => 'test-token', post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return url === '/tutor/translate' ? { translation: 'Olma' } : url.endsWith('/vision-topic/preview') ? topicResponse : response; } };
+let pictureResponse = { locations: [{ index: 0, picture: { page: 2, bbox: [100, 100, 300, 300] } }] };
+const mockApi = { getAccessToken: () => 'test-token', post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return url === '/tutor/translate' ? { translation: 'Olma' } : url.endsWith('/vision-topic/preview') ? topicResponse : url.endsWith('/vision-topic/pictures') ? pictureResponse : response; } };
 function load(file, extra) {
   const source = fs.readFileSync(file, 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
@@ -35,9 +36,9 @@ function load(file, extra) {
 const translator = load('src/components/reader/translator.tsx');
 const pictureHelpers = load('src/components/reader/pdf-picture-crops.ts', { '@/lib/timeout': { withTimeout: (p) => p } });
 const mockPictures = { validPicture: pictureHelpers.validPicture, usePdfPictureCrops: (_book, questions, pages) => ({ pictures: Object.fromEntries(questions.flatMap((q, i) => pictureHelpers.validPicture(q, pages) ? [[i, 'data:image/png;base64,abc']] : [])), error: '' }) };
-const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator, './pdf-picture-crops': mockPictures });
-const mergePictures = load('src/components/reader/merge-picture-regions.ts', { './pdf-picture-crops': mockPictures });
-const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview, './merge-picture-regions': mergePictures });
+const selector = { PictureSelector: ({ onSave }) => React.createElement('button', { onClick: () => onSave({ page: 1, bbox: [20, 30, 200, 300] }) }, 'Mock crop save') };
+const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator, './pdf-picture-crops': mockPictures, './picture-selector': selector });
+const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview, './pdf-picture-crops': mockPictures });
 const topic = { title: 'Articles', page_start: 1, page_end: 2, evidence_pages: [1], content_types: ['exercise'], uncertainty: '' };
 const result = { sampled_pages: [1, 2], provider: 'mock', model: 'test', warnings: [], theory: [], exercises: [
   { number: '1', instruction: 'Look', exercise_type: 'other', context: '', uncertainty: '', evidence_pages: [2],
@@ -53,8 +54,6 @@ async function main() {
   let root = createRoot(container);
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
   assert.equal(container.querySelector('textarea').value, 'old');
-  assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
-  await click(button('PDF ni yashirish'));
   assert.equal(container.querySelector('[data-testid=pdf]'), null);
   await click(button("Asl sahifada ko'rish"));
   assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
@@ -80,16 +79,21 @@ async function main() {
   });
   assert.doesNotMatch(container.textContent, /AI: to'g'ri/);
   assert.equal(container.querySelector('[aria-label="Mashq natijasi"]'), null);
-  topicResponse = JSON.parse(JSON.stringify(result));
-  topicResponse.exercises[0].questions[0].picture = { page: 2, bbox: [100, 100, 300, 300] };
-  assert.equal(button('Rasm joylarini aniqlash').disabled, true);
-  await click([...container.querySelectorAll('label')].find((l) => l.textContent.includes('sahifalarni tashqi AI xizmatiga qayta')).querySelector('input'));
-  await click(button('Rasm joylarini aniqlash'));
+  assert.equal(button('Rasmlarni AI bilan topish').disabled, true);
+  await click([...container.querySelectorAll('label')].find((l) => l.textContent.includes('mashq matnini tashqi AI xizmatiga yuborishga')).querySelector('input'));
+  await click(button('Rasmlarni AI bilan topish'));
   const saved = JSON.parse(localStorage.getItem(topicKey));
   assert.equal(saved.answers[0][0], 'a apple');
   assert.deepEqual(saved.result.exercises[0].questions[0].picture, { page: 2, bbox: [100, 100, 300, 300] });
-  assert.equal(calls.at(-1).url, '/books/book/vision-topic/preview');
+  assert.equal(calls.at(-1).url, '/books/book/vision-topic/pictures');
   assert.deepEqual(calls.at(-1).body.page_numbers, [1, 2]);
+  assert.equal(calls.at(-1).body.questions[0].answer, undefined);
+  await click(button("Rasmni o'zgartirish"));
+  await click(button('Mock crop save'));
+  const manuallySaved = JSON.parse(localStorage.getItem(topicKey));
+  assert.equal(manuallySaved.answers[0][0], 'a apple');
+  assert.deepEqual(manuallySaved.result.exercises[0].questions[0].picture, { page: 1, bbox: [20, 30, 200, 300] });
+  assert.deepEqual(manuallySaved.result.exercises[0].questions[0].evidence_pages, [2, 1]);
   await act(async () => root.unmount());
   root = createRoot(container);
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
@@ -158,15 +162,6 @@ async function main() {
   assert.equal(container.querySelector('[role=progressbar]').getAttribute('aria-valuenow'), '1');
   await act(async () => root.unmount());
   const question = { number: '2', prompt: '...', options: [], evidence_pages: [2], picture: { page: 2, bbox: [100, 100, 300, 300] } };
-  const oldEx = { ...exercise, questions: [{ ...question, picture: null }] };
-  const newEx = { ...oldEx, questions: [question] };
-  const merged = mergePictures.mergePictureRegions([oldEx], [newEx], [1, 2]);
-  assert.equal(merged.added, 1);
-  assert.equal(merged.exercises[0].questions[0].picture.page, 2);
-  assert.equal(oldEx.questions[0].picture, null);
-  assert.equal(mergePictures.mergePictureRegions([oldEx, oldEx], [newEx], [1, 2]).added, 0);
-  assert.equal(mergePictures.mergePictureRegions([oldEx], [{ ...newEx, instruction: 'Different' }], [1, 2]).added, 0);
-  assert.equal(mergePictures.mergePictureRegions([oldEx], [{ ...newEx, questions: [question, question] }], [1, 2]).added, 0);
   assert.ok(pictureHelpers.validPicture(question, [1, 2]));
   for (const picture of [{ page: 1, bbox: [100, 100, 300, 300] }, { page: 2, bbox: [300, 100, 100, 300] }, { page: 2, bbox: [0, 0, 1001, 10] }, { page: 2, bbox: [0, 0, NaN, 10] }]) {
     assert.equal(pictureHelpers.validPicture({ ...question, picture }, [1, 2]), null);
@@ -176,7 +171,8 @@ async function main() {
   assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
   assert.equal(container.querySelectorAll('figure img').length, 1);
   assert.match(container.querySelector('figure img').getAttribute('alt'), /2-savol/);
-  assert.match(container.textContent, /alohida rasm joyi aniqlanmagan/);
+  assert.ok(!container.querySelector('figure').className.includes('border'));
+  assert.doesNotMatch(container.textContent, /alohida rasm joyi aniqlanmagan/);
   await act(async () => root.unmount());
   // Exercise the real PDF crop hook with mocked PDF.js and canvas: coordinates are from the original page.
   const draws = []; let pdfLoads = 0;
@@ -197,6 +193,21 @@ async function main() {
   assert.equal(pdfLoads, 1);
   assert.deepEqual(draws[0].slice(1), [120, 160, 240, 320, 0, 0, 240, 320]);
   await act(async () => root.unmount());
-  console.log('Vision preview local persistence, image viewer, consent, feedback, summary, translator, choice and picture smoke tests passed');
+  const realSelector = load('src/components/reader/picture-selector.tsx', { '@/lib/timeout': { withTimeout: (p) => p }, 'pdfjs-dist': fakePdf });
+  assert.deepEqual(realSelector.selectionBox({ x: 400, y: 300 }, { x: 100, y: 50 }), [100, 50, 400, 300]);
+  assert.equal(realSelector.selectionBox({ x: 100, y: 100 }, { x: 102, y: 102 }), null);
+  let selected = null;
+  root = createRoot(container);
+  await act(async () => { root.render(React.createElement(realSelector.PictureSelector, { bookId: 'book', pages: [2], initialPage: 2, onSave: (r) => { selected = r; }, onCancel: () => {} })); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  const area = container.querySelector('canvas').parentElement;
+  area.getBoundingClientRect = () => ({ left: 10, top: 20, width: 200, height: 400 });
+  area.setPointerCapture = () => {};
+  const pointer = (type, x, y) => { const e = new window.Event(type, { bubbles: true }); Object.assign(e, { clientX: x, clientY: y, pointerId: 1 }); area.dispatchEvent(e); };
+  await act(async () => { pointer('pointerdown', 30, 60); pointer('pointerup', 110, 220); });
+  assert.equal(button("Rasmni qo'shish").disabled, false);
+  await click(button("Rasmni qo'shish"));
+  assert.deepEqual(selected, { page: 2, bbox: [100, 100, 500, 500] });
+  await act(async () => root.unmount());
+  console.log('Vision preview local persistence, consent, feedback, summary, translator, choice and picture selection smoke tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });
