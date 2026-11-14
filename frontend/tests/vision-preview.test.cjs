@@ -15,7 +15,8 @@ let identity = 'user1';
 const ui = { Button: ({ children, variant, size, ...props }) => React.createElement('button', props, children) };
 let fail = false;
 let response = { verdicts: [{ index: 0, correct: true, explanation_uz: 'Izoh' }] };
-const mockApi = { post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return url === '/tutor/translate' ? { translation: 'Olma' } : response; } };
+let topicResponse;
+const mockApi = { getAccessToken: () => 'test-token', post: async (url, body) => { calls.push({ url, body }); if (fail) throw new Error('Provayder ishlamadi'); return url === '/tutor/translate' ? { translation: 'Olma' } : url.endsWith('/vision-topic/preview') ? topicResponse : response; } };
 function load(file, extra) {
   const source = fs.readFileSync(file, 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
@@ -32,8 +33,11 @@ function load(file, extra) {
   return module.exports;
 }
 const translator = load('src/components/reader/translator.tsx');
-const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator });
-const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview });
+const pictureHelpers = load('src/components/reader/pdf-picture-crops.ts', { '@/lib/timeout': { withTimeout: (p) => p } });
+const mockPictures = { validPicture: pictureHelpers.validPicture, usePdfPictureCrops: (_book, questions, pages) => ({ pictures: Object.fromEntries(questions.flatMap((q, i) => pictureHelpers.validPicture(q, pages) ? [[i, 'data:image/png;base64,abc']] : [])), error: '' }) };
+const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator, './pdf-picture-crops': mockPictures });
+const mergePictures = load('src/components/reader/merge-picture-regions.ts', { './pdf-picture-crops': mockPictures });
+const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview, './merge-picture-regions': mergePictures });
 const topic = { title: 'Articles', page_start: 1, page_end: 2, evidence_pages: [1], content_types: ['exercise'], uncertainty: '' };
 const result = { sampled_pages: [1, 2], provider: 'mock', model: 'test', warnings: [], theory: [], exercises: [
   { number: '1', instruction: 'Look', exercise_type: 'other', context: '', uncertainty: '', evidence_pages: [2],
@@ -49,7 +53,10 @@ async function main() {
   let root = createRoot(container);
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
   assert.equal(container.querySelector('textarea').value, 'old');
-  await click(button('Asl PDF'));
+  assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
+  await click(button('PDF ni yashirish'));
+  assert.equal(container.querySelector('[data-testid=pdf]'), null);
+  await click(button("Asl sahifada ko'rish"));
   assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
   let text = container.querySelector('textarea');
   await act(async () => {
@@ -73,6 +80,16 @@ async function main() {
   });
   assert.doesNotMatch(container.textContent, /AI: to'g'ri/);
   assert.equal(container.querySelector('[aria-label="Mashq natijasi"]'), null);
+  topicResponse = JSON.parse(JSON.stringify(result));
+  topicResponse.exercises[0].questions[0].picture = { page: 2, bbox: [100, 100, 300, 300] };
+  assert.equal(button('Rasm joylarini aniqlash').disabled, true);
+  await click([...container.querySelectorAll('label')].find((l) => l.textContent.includes('sahifalarni tashqi AI xizmatiga qayta')).querySelector('input'));
+  await click(button('Rasm joylarini aniqlash'));
+  const saved = JSON.parse(localStorage.getItem(topicKey));
+  assert.equal(saved.answers[0][0], 'a apple');
+  assert.deepEqual(saved.result.exercises[0].questions[0].picture, { page: 2, bbox: [100, 100, 300, 300] });
+  assert.equal(calls.at(-1).url, '/books/book/vision-topic/preview');
+  assert.deepEqual(calls.at(-1).body.page_numbers, [1, 2]);
   await act(async () => root.unmount());
   root = createRoot(container);
   await act(async () => root.render(React.createElement(VisionMapPreview, { bookId: 'book', pageCount: 2 })));
@@ -140,6 +157,46 @@ async function main() {
   assert.equal(button('B) orange').getAttribute('aria-pressed'), 'true');
   assert.equal(container.querySelector('[role=progressbar]').getAttribute('aria-valuenow'), '1');
   await act(async () => root.unmount());
-  console.log('Vision preview local persistence, image viewer, consent, feedback, summary, translator and choice smoke tests passed');
+  const question = { number: '2', prompt: '...', options: [], evidence_pages: [2], picture: { page: 2, bbox: [100, 100, 300, 300] } };
+  const oldEx = { ...exercise, questions: [{ ...question, picture: null }] };
+  const newEx = { ...oldEx, questions: [question] };
+  const merged = mergePictures.mergePictureRegions([oldEx], [newEx], [1, 2]);
+  assert.equal(merged.added, 1);
+  assert.equal(merged.exercises[0].questions[0].picture.page, 2);
+  assert.equal(oldEx.questions[0].picture, null);
+  assert.equal(mergePictures.mergePictureRegions([oldEx, oldEx], [newEx], [1, 2]).added, 0);
+  assert.equal(mergePictures.mergePictureRegions([oldEx], [{ ...newEx, instruction: 'Different' }], [1, 2]).added, 0);
+  assert.equal(mergePictures.mergePictureRegions([oldEx], [{ ...newEx, questions: [question, question] }], [1, 2]).added, 0);
+  assert.ok(pictureHelpers.validPicture(question, [1, 2]));
+  for (const picture of [{ page: 1, bbox: [100, 100, 300, 300] }, { page: 2, bbox: [300, 100, 100, 300] }, { page: 2, bbox: [0, 0, 1001, 10] }, { page: 2, bbox: [0, 0, NaN, 10] }]) {
+    assert.equal(pictureHelpers.validPicture({ ...question, picture }, [1, 2]), null);
+  }
+  root = createRoot(container);
+  await act(async () => root.render(React.createElement(preview.PreviewExercise, { bookId: 'book', ex: { ...exercise, instruction: 'Look at the pictures', questions: [question, { ...question, number: '3', picture: null }] }, pages: [1, 2], answers: ['', ''], onChange: () => {}, defaultShowPage: true })));
+  assert.equal(container.querySelector('[data-testid=pdf]').textContent, 'PDF page 2');
+  assert.equal(container.querySelectorAll('figure img').length, 1);
+  assert.match(container.querySelector('figure img').getAttribute('alt'), /2-savol/);
+  assert.match(container.textContent, /alohida rasm joyi aniqlanmagan/);
+  await act(async () => root.unmount());
+  // Exercise the real PDF crop hook with mocked PDF.js and canvas: coordinates are from the original page.
+  const draws = []; let pdfLoads = 0;
+  window.HTMLCanvasElement.prototype.getContext = function () { return { drawImage: (...args) => draws.push(args) }; };
+  window.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,real-crop';
+  const fakePdf = { GlobalWorkerOptions: {}, getDocument: (opts) => {
+    pdfLoads++; assert.equal(opts.httpHeaders.authorization, 'Bearer test-token');
+    return { promise: Promise.resolve({ numPages: 2, getPage: async (n) => {
+      assert.equal(n, 2);
+      return { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }), render: () => ({ promise: Promise.resolve(), cancel() {} }) };
+    } }), destroy: async () => {} };
+  } };
+  const realPictures = load('src/components/reader/pdf-picture-crops.ts', { '@/lib/timeout': { withTimeout: (p) => p }, 'pdfjs-dist': fakePdf });
+  function CropHarness({ q }) { const state = realPictures.usePdfPictureCrops('book', [q], [1, 2]); return React.createElement('div', null, state.pictures[0] || state.error); }
+  root = createRoot(container);
+  await act(async () => { root.render(React.createElement(CropHarness, { q: question })); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  assert.match(container.textContent, /real-crop/);
+  assert.equal(pdfLoads, 1);
+  assert.deepEqual(draws[0].slice(1), [120, 160, 240, 320, 0, 0, 240, 320]);
+  await act(async () => root.unmount());
+  console.log('Vision preview local persistence, image viewer, consent, feedback, summary, translator, choice and picture smoke tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });

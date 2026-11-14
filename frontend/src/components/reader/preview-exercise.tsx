@@ -1,19 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { post } from "@/lib/api";
 import { Button } from "@/components/ui";
 import { PdfViewer } from "./pdf-viewer";
 import { Translator, type TranslationSeed } from "./translator";
+import { usePdfPictureCrops, validPicture, type PictureRegion } from "./pdf-picture-crops";
 
 export type PreviewExerciseData = { number: string; instruction: string; exercise_type: string; context: string; uncertainty: string;
-  evidence_pages: number[]; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[] }[] };
+  evidence_pages: number[]; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[]; picture?: PictureRegion | null }[] };
 type Feedback = { index: number; correct: boolean | null; explanation_uz: string };
 
-export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
-  bookId: string; ex: PreviewExerciseData; pages: number[]; answers: string[]; onChange: (values: string[]) => void;
+export function PreviewExercise({ bookId, ex, pages, answers, onChange, defaultShowPage = false, active = true, externalBusy = false }: {
+  bookId: string; ex: PreviewExerciseData; pages: number[]; answers: string[]; onChange: (values: string[]) => void; defaultShowPage?: boolean; active?: boolean; externalBusy?: boolean;
 }) {
-  const [showPage, setShowPage] = useState(false);
+  const [showPage, setShowPage] = useState(defaultShowPage);
+  const sourceRef = useRef<HTMLDivElement>(null);
+  const articleRef = useRef<HTMLElement>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+  useEffect(() => {
+    if (!articleRef.current) return;
+    if (typeof IntersectionObserver === "undefined") { setNearViewport(true); return; }
+    const observer = new IntersectionObserver(([entry]) => setNearViewport(entry.isIntersecting), { rootMargin: "800px" });
+    observer.observe(articleRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const { pictures, error: pictureError } = usePdfPictureCrops(bookId, ex.questions, pages, nearViewport && active);
   const [page, setPage] = useState(ex.evidence_pages[0] || pages[0]);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -23,7 +35,7 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
   const prepareTranslation = (text: string) => setTranslationSeed((prev) => ({ text, id: (prev?.id || 0) + 1 }));
 
   async function check() {
-    if (!consent || busy || !answers.some((a) => a?.trim())) return;
+    if (!consent || busy || externalBusy || !answers.some((a) => a?.trim())) return;
     setBusy(true); setError(""); setFeedback(null);
     try {
       const r = await post<{ verdicts: Feedback[] }>(`/books/${bookId}/vision-topic/check`, {
@@ -47,7 +59,7 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
   const progress = ex.questions.length ? Math.round(answeredCount / ex.questions.length * 100) : 0;
   const types: Record<string, string> = { cloze: "Bo'sh joyni to'ldirish", multiple_choice: "Variant tanlash", transformation: "Gapni o'zgartirish", error_correction: "Xatoni topish", matching: "Moslashtirish", categorization: "Guruhlash", dialogue: "Muloqot", writing: "Yozish", speaking: "Gapirish", other: "Mashq" };
 
-  return <article className="mt-5 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+  return <article ref={articleRef} className="mt-5 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
     <header className="relative overflow-hidden bg-gradient-to-br from-indigo-700 via-indigo-600 to-violet-600 px-4 py-5 text-white sm:px-6 sm:py-6">
       <div aria-hidden="true" className="pointer-events-none absolute -right-8 -top-14 h-40 w-40 rounded-full border-[24px] border-white/10" />
       <div className="relative flex flex-wrap items-start justify-between gap-4">
@@ -68,8 +80,10 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
       </div>
       {ex.uncertainty && <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">Noaniqlik: {ex.uncertainty}</p>}
       <Translator seed={translationSeed} />
-      <div><Button type="button" variant="secondary" size="sm" onClick={() => setShowPage(!showPage)} aria-expanded={showPage}>{showPage ? "PDF ni yashirish" : "Asl PDF va rasmlarni ko'rish"}</Button>
-        {showPage && <div className="mt-3 h-[480px] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700"><PdfViewer bookId={bookId} pageNumber={page} onGoTo={setPage} /></div>}
+      <div ref={sourceRef}><Button type="button" variant="secondary" size="sm" onClick={() => setShowPage(!showPage)} aria-expanded={showPage}>{showPage ? "PDF ni yashirish" : "Asl PDF va rasmlarni ko'rish"}</Button>
+        {showPage && active && <><p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Kitobning asl sahifasi. Matn va rasmlarni shu yerda o'zgartirmasdan ko'ring; quyidagi savollar AI talqini.</p>
+          <div className="mt-3 h-[480px] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700">{nearViewport && <PdfViewer bookId={bookId} pageNumber={page} onGoTo={setPage} />}</div></>}
+        {pictureError && <p role="alert" className="mt-2 text-xs text-amber-700 dark:text-amber-300">{pictureError}</p>}
       </div>
       <div className="space-y-3">{ex.questions.map((q, i) => {
         const verdict = feedback?.[i];
@@ -78,9 +92,13 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
           <div className="flex items-start gap-3"><span className="grid h-9 min-w-9 shrink-0 place-items-center rounded-xl bg-indigo-100 px-2 text-sm font-bold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200">{q.number || i + 1}</span>
             <div className="min-w-0 flex-1"><div className="flex flex-wrap items-start justify-between gap-2"><p className="whitespace-pre-wrap text-sm font-semibold leading-relaxed text-slate-800 dark:text-slate-100">{q.prompt || "Rasmga qarang"}</p>
               {q.prompt && <button type="button" onClick={() => prepareTranslation(q.prompt)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-950">Tarjima ↗</button>}</div>
-              {q.options.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{q.options.map((opt, k) => ex.exercise_type === "multiple_choice" ? <button type="button" key={k} disabled={busy} aria-pressed={answers[i] === opt} onClick={() => { const next = ex.questions.map((_, j) => j === i ? opt : (answers[j] || "")); onChange(next); setFeedback(null); }} className={`rounded-xl border px-3 py-2 text-left text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 ${answers[i] === opt ? "border-indigo-500 bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-100" : "border-slate-200 text-slate-600 hover:border-indigo-300 dark:border-slate-600 dark:text-slate-300"}`}>{opt}</button> : <span key={k} className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{opt}</span>)}</div>}
+              {pictures[i] && <figure className="mt-3 w-fit max-w-full rounded-xl border border-slate-200 bg-white p-2 dark:border-slate-600"><img src={pictures[i]} alt={`${q.number || i + 1}-savol uchun asl PDFdan AI belgilagan rasm qirqimi`} className="max-h-56 max-w-full rounded-lg object-contain" /><figcaption className="mt-1 text-[11px] text-slate-500">Asl PDF qirqimi · AI joylashuvini asl sahifa bilan solishtiring</figcaption></figure>}
+              {validPicture(q, pages) && !pictures[i] && !pictureError && <p className="mt-2 text-xs text-slate-500">Asl rasm yuklanmoqda…</p>}
+              {!validPicture(q, pages) && /\b(picture|pictures|image|images|illustration|photo|photos)\b|rasm/i.test(ex.instruction) && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Bu savol uchun alohida rasm joyi aniqlanmagan; asl sahifaga qarang.</p>}
+              <button type="button" onClick={() => { setPage(validPicture(q, pages)?.page || q.evidence_pages[0] || ex.evidence_pages[0] || pages[0]); setShowPage(true); setTimeout(() => sourceRef.current?.scrollIntoView?.({ block: "start" }), 0); }} className="mt-2 rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-950">Asl sahifada ko'rish ↑</button>
+              {q.options.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{q.options.map((opt, k) => ex.exercise_type === "multiple_choice" ? <button type="button" key={k} disabled={busy || externalBusy} aria-pressed={answers[i] === opt} onClick={() => { const next = ex.questions.map((_, j) => j === i ? opt : (answers[j] || "")); onChange(next); setFeedback(null); }} className={`rounded-xl border px-3 py-2 text-left text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 ${answers[i] === opt ? "border-indigo-500 bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-100" : "border-slate-200 text-slate-600 hover:border-indigo-300 dark:border-slate-600 dark:text-slate-300"}`}>{opt}</button> : <span key={k} className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{opt}</span>)}</div>}
               <label className="mt-4 block text-xs font-semibold text-slate-500 dark:text-slate-400">Javob <span className="font-normal">· shu brauzerda saqlanadi</span>
-                <textarea rows={2} maxLength={2000} disabled={busy} value={answers[i] || ""} onChange={(e) => {
+                <textarea rows={2} maxLength={2000} disabled={busy || externalBusy} value={answers[i] || ""} onChange={(e) => {
                   const next = ex.questions.map((_, j) => j === i ? e.target.value : (answers[j] || "")); onChange(next); setFeedback(null);
                 }} placeholder="Javobingizni shu yerga yozing…" className="mt-2 block w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-indigo-900" />
               </label>
@@ -92,9 +110,9 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
       {ex.questions.length > 0 && <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 dark:border-indigo-900 dark:bg-indigo-950/20">
         <p className="text-sm font-bold text-indigo-950 dark:text-indigo-100">Tayyor bo'ldingizmi?</p>
         <p className="mt-1 text-xs leading-relaxed text-indigo-800 dark:text-indigo-300">Javoblaringizni asl sahifa bilan birga AI yordamida tekshiring.</p>
-        <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-600 dark:text-slate-300"><input type="checkbox" className="mt-0.5" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
+        <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-600 dark:text-slate-300"><input type="checkbox" className="mt-0.5" checked={consent} disabled={busy || externalBusy} onChange={(e) => setConsent(e.target.checked)} />
           <span>PDF {pages.join(", ")}-sahifalari va ushbu mashq javoblarim tashqi AI xizmatiga yuborilishiga roziman. Xizmat ma'lumotdan foydalanishi yoki haq olishi mumkin.</span></label>
-        <Button className="mt-3" type="button" size="sm" disabled={!consent || busy || !answers.some((a) => a?.trim())} onClick={check}>{busy ? "Tekshirilmoqda..." : "AI bilan tekshirish"}</Button>
+        <Button className="mt-3" type="button" size="sm" disabled={!consent || busy || externalBusy || !answers.some((a) => a?.trim())} onClick={check}>{busy ? "Tekshirilmoqda..." : "AI bilan tekshirish"}</Button>
         <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">AI bahosi taxminiy, javob kaliti emas; asl sahifa bilan solishtiring. Baholar dars natijalariga qo'shilmaydi.</p>
       </div>}
       {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
