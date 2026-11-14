@@ -186,6 +186,7 @@ export function ExerciseCard({
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{exercise.instructions}</p>
           )}
           {exercise.detection === "ocr" && <p className="mt-1 text-xs text-amber-600">OCR matni xato bo'lishi mumkin. Javob kaliti tasdiqlanmagan; tekshirish AI sozlangan bo'lsa matn va javobni AI xizmatiga yuborishi mumkin.</p>}
+          {exercise.detection === "vision" && <p className="mt-1 text-xs text-amber-600">Bu mashq sahifa rasmidan AI yordamida ajratilgan va tekshirilmagan. Javob kaliti yo'q; matnni asl sahifa bilan solishtiring.</p>}
         </div>
         <div className="flex items-center gap-2">
           {savedStatus === "saving" && <span className="text-[11px] text-slate-400">saqlanmoqda…</span>}

@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 60
     ai_max_retries: int = 2
     ai_daily_token_limit: int = 0  # 0 = unlimited (per user, per day)
+    vision_exercise_pages_per_day: int = 150  # pages a user may scan with vision AI per day; 0 = unlimited
 
     # --- Plan limits (subscription-ready; MVP is free, no payments anywhere) ---
     free_max_books: int = 3

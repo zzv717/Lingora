@@ -32,7 +32,7 @@ from app.models import (
     User,
     VocabularyWord,
 )
-from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionMapPreviewIn, VisionTopicPreviewIn
+from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionMapPreviewIn, VisionTopicPreviewIn
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
@@ -423,6 +423,63 @@ def preview_vision_topic(book_id: str, data: VisionTopicPreviewIn, request: Requ
         raise ApiError("INVALID_PAGE_SELECTION", "Takrorlanmagan va kitob oralig'idagi PDF sahifa raqamlarini tanlang.", 422)
     from app.services.ai.vision_topic import preview_topic
     return preview_topic(db, user.id, book, sorted(pages), data.topic)
+
+
+def _vision_page(db: Session, book, page_number: int, data: VisionExercisesIn) -> BookPage:
+    """Shared checks for the vision-exercise endpoints."""
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book.id, BookPage.page_number == page_number))
+    if not page:
+        raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
+    return page
+
+
+@router.get("/{book_id}/vision-exercises/pending")
+def vision_exercises_pending(book_id: str, include_text_pages: bool = False,
+                             db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Pages still to scan: scanned pages not yet processed; optionally also text pages with no exercises."""
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    with_exercises = set(db.scalars(select(Exercise.page_number).where(Exercise.book_id == book.id)).all())
+    pages = db.scalars(select(BookPage).where(BookPage.book_id == book.id).order_by(BookPage.page_number)).all()
+    pending = [p.page_number for p in pages
+               if p.page_number not in with_exercises and (p.needs_ocr or include_text_pages)]
+    return {"pages": pending, "total_pages": book.page_count}
+
+
+@router.post("/{book_id}/vision-exercises/pages/{page_number}/preview")
+def preview_vision_exercises(book_id: str, page_number: int, data: VisionExercisesIn, request: Request,
+                             db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Run the vision model on one page and return the exercises it found. Saves nothing."""
+    limit(request, "vision_exercises", 300, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    _vision_page(db, book, page_number, data)
+    from app.services.ai.vision_exercises import analyse_page, page_as_preview
+    result, provider, model = analyse_page(db, user.id, book, page_number)
+    return {"page_number": page_number, "provider": provider, "model": model, "page_kind": result.page_kind,
+            "exercises": page_as_preview(result), "warnings": result.warnings, "saved": False}
+
+
+@router.post("/{book_id}/vision-exercises/pages/{page_number}")
+def save_vision_exercises(book_id: str, page_number: int, data: VisionExercisesIn, request: Request,
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Scan one page with the vision model and save the exercises as reviewable (needs_review) content."""
+    limit(request, "vision_exercises", 300, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    # Serialize with other imports for the same book on PostgreSQL.
+    db.scalar(select(Book).where(Book.id == book.id).with_for_update())
+    page = _vision_page(db, book, page_number, data)
+    db.scalar(select(BookPage).where(BookPage.id == page.id).with_for_update())
+    from app.services.ai.vision_exercises import analyse_page, page_as_preview, precheck_page, save_page
+    precheck_page(db, book, page, data.replace)
+    result, provider, model = analyse_page(db, user.id, book, page_number)
+    saved = save_page(db, book, page, result, replace=data.replace)
+    return {"page_number": page_number, "provider": provider, "model": model, "page_kind": result.page_kind,
+            "warnings": result.warnings, "exercises": page_as_preview(result), "saved": True, **saved}
 
 
 @router.get("/{book_id}/ocr/pending")

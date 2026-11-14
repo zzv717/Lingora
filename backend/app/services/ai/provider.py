@@ -48,6 +48,15 @@ class AIProvider(ABC):
                  json_mode: bool = False) -> AIResponse: ...
 
 
+_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """OpenAI reasoning-style models: they reject `max_tokens` and a custom `temperature`."""
+    m = (model or "").lower().split("/")[-1]
+    return m.startswith(_REASONING_PREFIXES)
+
+
 class OpenAICompatibleProvider(AIProvider):
     """Works with OpenAI and any compatible endpoint (Groq, OpenRouter, vLLM, Ollama)."""
     name = "openai_compatible"
@@ -67,12 +76,18 @@ class OpenAICompatibleProvider(AIProvider):
                 payload_msgs.append({"role": m.role, "content": content})
             else:
                 payload_msgs.append({"role": m.role, "content": m.content})
-        payload: dict[str, Any] = {
-            "model": model or settings.ai_model,
-            "messages": payload_msgs,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
+        mdl = model or settings.ai_model
+        payload: dict[str, Any] = {"model": mdl, "messages": payload_msgs}
+        official_openai = "api.openai.com" in self.base_url
+        if official_openai or _is_reasoning_model(mdl):
+            # Newer OpenAI models (gpt-5.x, o-series) reject `max_tokens`; `max_completion_tokens` is accepted
+            # by current OpenAI chat models. Third-party compatible servers (Groq, vLLM, Ollama...) keep max_tokens.
+            # Reasoning tokens count against this limit, so give them room or the visible answer can be empty.
+            payload["max_completion_tokens"] = min(max_tokens * 4, 16000) if _is_reasoning_model(mdl) else max_tokens
+        else:
+            payload["max_tokens"] = max_tokens
+        if not _is_reasoning_model(mdl):
+            payload["temperature"] = temperature  # reasoning models only accept the default value
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         return self._send(f"{self.base_url}/chat/completions", payload)
@@ -86,6 +101,16 @@ class OpenAICompatibleProvider(AIProvider):
                     resp = client.post(url, json=payload, headers=self.headers)
                 if resp.status_code in (429, 500, 502, 503, 504):
                     raise ApiError("AI_PROVIDER_BUSY", f"AI provayder vaqtincha band ({resp.status_code}).", 503)
+                if 400 <= resp.status_code < 500:
+                    # Misconfiguration (bad key, unknown model, unsupported parameter): retrying cannot help and the
+                    # generic message hides the cause. Surface the provider's own short message.
+                    try:
+                        detail = str((resp.json().get("error") or {}).get("message", ""))[:200]
+                    except Exception:
+                        detail = ""
+                    log.error("AI provider rejected request: %s %s", resp.status_code, detail)
+                    raise ApiError("AI_PROVIDER_REJECTED",
+                                   f"AI provayder so'rovni rad etdi ({resp.status_code}): {detail or 'sozlamalarni tekshiring'}", 502)
                 resp.raise_for_status()
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"] or ""

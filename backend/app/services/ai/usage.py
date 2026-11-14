@@ -44,10 +44,16 @@ def record_usage(db: Session, user_id: str, feature: str, provider: str, model: 
     db.commit()
 
 
+# Heavy bulk features have their own daily limit (enforce_feature_quota) and must not eat the
+# general per-plan call allowance that tutor/grading/review depend on.
+SEPARATE_QUOTA_FEATURES = ("vision_exercises",)
+
+
 def ai_calls_today(db: Session, user_id: str) -> int:
     return int(db.scalar(
         select(func.count(UsageEvent.id)).where(
-            UsageEvent.user_id == user_id, UsageEvent.day == _today(), UsageEvent.ok.is_(True)
+            UsageEvent.user_id == user_id, UsageEvent.day == _today(), UsageEvent.ok.is_(True),
+            UsageEvent.feature.notin_(SEPARATE_QUOTA_FEATURES),
         )
     ) or 0)
 
@@ -77,6 +83,10 @@ def enforce_ai_quota(db: Session, user_id: str, feature: str) -> None:
             details={"feature": feature, "used": used_calls, "limit": limits["ai_calls_per_day"]},
         )
 
+    _enforce_token_quota(db, user_id, feature)
+
+
+def _enforce_token_quota(db: Session, user_id: str, feature: str) -> None:
     # Daily token limit (if configured, e.g. > 0)
     if settings.ai_daily_token_limit > 0:
         used_tokens = ai_tokens_today(db, user_id)
@@ -90,3 +100,30 @@ def enforce_ai_quota(db: Session, user_id: str, feature: str) -> None:
                 http_status=429,
                 details={"feature": feature, "used_tokens": used_tokens, "limit_tokens": settings.ai_daily_token_limit},
             )
+
+
+def feature_calls_today(db: Session, user_id: str, feature: str) -> int:
+    return int(db.scalar(
+        select(func.count(UsageEvent.id)).where(
+            UsageEvent.user_id == user_id, UsageEvent.day == _today(),
+            UsageEvent.feature == feature, UsageEvent.ok.is_(True)
+        )
+    ) or 0)
+
+
+def enforce_feature_quota(db: Session, user_id: str, feature: str, daily_limit: int) -> None:
+    """Separate daily limit for one heavy feature (e.g. whole-book vision scanning).
+
+    The general per-plan call limit is intentionally not applied here: scanning a 100-page book would
+    exhaust a 20-calls-per-day plan limit after 20 pages. daily_limit <= 0 means unlimited.
+    The global daily token limit (if configured) still applies.
+    """
+    used = feature_calls_today(db, user_id, feature)
+    if daily_limit > 0 and used >= daily_limit:
+        raise ApiError(
+            code="AI_FEATURE_QUOTA_EXCEEDED",
+            message_uz=f"Bugungi sahifa tahlili limitiga yetdingiz ({used}/{daily_limit}). Limit ertaga yangilanadi.",
+            http_status=429,
+            details={"feature": feature, "used": used, "limit": daily_limit},
+        )
+    _enforce_token_quota(db, user_id, feature)

@@ -405,5 +405,10 @@ class VisionMapPreviewIn(BaseModel):
     consent_images_to_provider: bool
 
 
+class VisionExercisesIn(BaseModel):
+    consent_images_to_provider: bool
+    replace: bool = False
+
+
 class VisionTopicPreviewIn(VisionMapPreviewIn):
     topic: str = Field(max_length=300)
