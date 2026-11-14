@@ -115,7 +115,7 @@ export default function LessonStartPage() {
         </Card>
         {data.lessons.some((lesson) => lesson.pending_ocr_pages > 0 || !lesson.page_inventory_complete) && <Card>
           <h2 className="font-semibold">Skan sahifalarda mashqlar yetishmasligi mumkin</h2>
-          <p className="mt-1 text-sm text-slate-500">Vision sinovi sahifalarni ko'rib chiqadi, lekin natijasi hali dars mashqlari sifatida saqlanmaydi. Vision xizmatini sozlash va sahifalarni yuborishga rozilik kerak.</p>
+          <p className="mt-1 text-sm text-slate-500">Vision sinovi sahifalarni ko'rib chiqadi. Sinov natijasi va javoblar faqat shu brauzerda saqlanadi, dars mashqlariga qo'shilmaydi. Vision xizmati va yuborishga rozilik kerak.</p>
           <details className="mt-3"><summary className="cursor-pointer text-sm text-brand-600">Vision orqali sahifalarni sinash</summary>
             <VisionMapPreview key={bookId} bookId={bookId} pageCount={data.page_count} initialTopicCount={count} />
           </details>

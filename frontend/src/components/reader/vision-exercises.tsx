@@ -80,7 +80,7 @@ export function VisionExercises({ bookId, pageCount, onUpdate }: { bookId: strin
     <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={includeText} disabled={busy} onChange={(e) => setIncludeText(e.target.checked)} />
       <span>Matnli (skaner bo'lmagan) sahifalarni ham tekshirish, agar ularda mashq topilmagan bo'lsa</span></label>
     <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
-      <span>Sahifa rasmlari sozlangan tashqi AI xizmatiga (OpenAI) yuborilishiga roziman. Provayder ma'lumotni qayta ishlashi va haq olishi mumkin; yuborishga huquqim bo'lmagan kitoblarni tanlamayman.</span></label>
+      <span>Sahifa rasmlari sozlangan tashqi AI xizmatiga yuborilishiga roziman. Provayder ma'lumotni qayta ishlashi va haq olishi mumkin; yuborishga huquqim bo'lmagan kitoblarni tanlamayman.</span></label>
     <div className="mt-3 flex gap-2">
       <Button variant="secondary" size="sm" disabled={!consent || busy || !pageCount} onClick={run}>
         {busy ? `Tahlil qilinmoqda: ${current ?? "..."} (${results.length}/${total})` : "Tahlilni boshlash"}</Button>

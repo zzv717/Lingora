@@ -408,6 +408,27 @@ def preview_vision_map(book_id: str, data: VisionMapPreviewIn, request: Request,
     return preview_map(db, user.id, book, sorted(pages))
 
 
+from app.services.ai.vision_preview_check import PreviewCheckIn
+
+
+@router.post("/{book_id}/vision-topic/check")
+def check_vision_topic(book_id: str, data: PreviewCheckIn, request: Request,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Opt-in image-based feedback for one preview exercise, without persisting a grade."""
+    limit(request, "vision_preview_check", 30, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifalar va javoblarni AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    if len(set(data.page_numbers)) != len(data.page_numbers) or any(n < 1 or n > book.page_count for n in data.page_numbers):
+        raise ApiError("INVALID_PAGE_SELECTION", "Takrorlanmagan va kitob oralig'idagi PDF sahifalarini tanlang.", 422)
+    if not any(q.answer.strip() for q in data.questions):
+        raise ApiError("NO_ANSWERS", "Tekshirish uchun kamida bitta javob kiriting.", 422)
+    from app.services.ai.vision_preview_check import check_preview
+    return check_preview(db, user.id, book, data)
+
+
 @router.post("/{book_id}/vision-topic/preview")
 def preview_vision_topic(book_id: str, data: VisionTopicPreviewIn, request: Request,
                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
