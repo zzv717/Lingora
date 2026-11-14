@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { PreviewExercise, type PreviewExerciseData } from "./preview-exercise";
-import { mergePictureRegions } from "./merge-picture-regions";
+import { validPicture } from "./pdf-picture-crops";
 import { post } from "@/lib/api";
 import { Button } from "@/components/ui";
 
@@ -14,6 +14,8 @@ type Result = { sampled_pages: number[]; total_pages: number; partial: boolean; 
 type TopicResult = { topic: string; sampled_pages: number[]; provider: string; model: string; warnings: string[];
   theory: { text: string; evidence_pages: number[] }[];
   exercises: PreviewExerciseData[] };
+
+function pagesContain(pages: number[], page: number) { return pages.includes(page); }
 
 function parsePages(text: string, pageCount: number): number[] | null {
   const tokens = text.split(",").map((s) => s.trim());
@@ -102,15 +104,15 @@ function TopicSample({ bookId, pageCount, topic, active, busy, setBusy }: { book
   const [answers, setAnswers] = useState<string[][]>([]);
   const [storageError, setStorageError] = useState("");
   const [revision, setRevision] = useState(0);
-  const [pictureConsent, setPictureConsent] = useState(false);
-  const [pictureMessage, setPictureMessage] = useState("");
   const [consent, setConsent] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<TopicResult | null>(null);
+  const latest = useRef({ result, answers, storageKey });
+  latest.current = { result, answers, storageKey };
 
   useEffect(() => {
-    setResult(null); setAnswers([]); setConsent(false); setPictureConsent(false); setPictureMessage("");
+    setResult(null); setAnswers([]); setConsent(false);
     if (!storageKey) return;
     try {
       const saved = localStorage.getItem(storageKey);
@@ -141,21 +143,8 @@ function TopicSample({ bookId, pageCount, topic, active, busy, setBusy }: { book
       const data = await post<TopicResult>(`/books/${bookId}/vision-topic/preview`,
         { page_numbers: numbers, topic: topic.title, consent_images_to_provider: true });
       const empty = data.exercises.map((ex) => ex.questions.map(() => ""));
-      setResult(data); setAnswers(empty); setPictureConsent(false); setPictureMessage(""); setRevision((n) => n + 1); saveLocally(data, empty);
+      setResult(data); setAnswers(empty); setRevision((n) => n + 1); saveLocally(data, empty);
     } catch (e) { setError(e instanceof Error ? e.message : "Mavzu sinovi bajarilmadi."); }
-    finally { setWorking(false); setBusy(false); }
-  }
-  async function findPictures() {
-    if (!result || !pictureConsent || busy) return;
-    setWorking(true); setBusy(true); setPictureMessage("");
-    try {
-      const fresh = await post<TopicResult>(`/books/${bookId}/vision-topic/preview`,
-        { page_numbers: result.sampled_pages, topic: topic.title, consent_images_to_provider: true });
-      const merged = mergePictureRegions(result.exercises, fresh.exercises, result.sampled_pages);
-      const next = { ...result, exercises: merged.exercises };
-      setResult(next); saveLocally(next, answers);
-      setPictureMessage(merged.added ? `${merged.added} ta savolga rasm joyi qo'shildi. Qirqimlarni asl sahifa bilan solishtiring.` : "Mos rasm joylari aniqlanmadi. Asl PDF sahifasidan foydalaning.");
-    } catch (e) { setPictureMessage(e instanceof Error ? e.message : "Rasm joylarini aniqlab bo'lmadi."); }
     finally { setWorking(false); setBusy(false); }
   }
   return <div className="mt-4 border-t border-slate-300 pt-3 dark:border-slate-700">
@@ -174,20 +163,26 @@ function TopicSample({ bookId, pageCount, topic, active, busy, setBusy }: { book
       {result.theory.map((t, i) => <p key={i} className="mt-2 text-xs">Nazariya ({t.evidence_pages.join(", ")}): {t.text}</p>)}
       {!result.exercises.length && <p className="mt-1 text-xs">Mashq aniqlanmadi.</p>}
       {storageError && <p role="alert" className="text-red-600">{storageError}</p>}
-      <details className="mt-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
-        <summary className="cursor-pointer text-xs font-semibold text-indigo-700 dark:text-indigo-300">Eski natijada rasmlar ko'rinmayaptimi?</summary>
-        <p className="mt-2 text-xs">AI PDF {result.sampled_pages.join(", ")}-sahifalarini qayta ko'rib, mos savollar uchun rasm joylarini aniqlashga urinadi. Mavjud savollar va javoblar almashtirilmaydi. Joylashuv taxminiy; haq va kvota qo'llanishi mumkin.</p>
-        <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={pictureConsent} disabled={busy} onChange={(e) => setPictureConsent(e.target.checked)} />Ushbu sahifalarni tashqi AI xizmatiga qayta yuborishga roziman.</label>
-        <Button className="mt-2" type="button" size="sm" variant="secondary" disabled={busy || !pictureConsent} onClick={findPictures}>{working ? "Tahlil qilinmoqda..." : "Rasm joylarini aniqlash"}</Button>
-        {pictureMessage && <p role="status" className="mt-2 text-xs">{pictureMessage}</p>}
-      </details>
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => {
         if (!window.confirm("Ushbu brauzerdagi mavzu natijasi va javoblarini o'chirasizmi?")) return;
         try { localStorage.removeItem(storageKey); setResult(null); setAnswers([]); setStorageError(""); }
         catch { setStorageError("Brauzerdagi ma'lumotni o'chirib bo'lmadi."); }
       }}>Bu mavzuning mahalliy ma'lumotlarini o'chirish</Button>
       {result.exercises.map((ex, i) => <PreviewExercise key={`${revision}-${i}`} bookId={bookId} ex={ex} pages={result.sampled_pages} answers={answers[i] || []}
-        active={active} externalBusy={busy} defaultShowPage
+        active={active} externalBusy={busy}
+        onPicturesChange={(updates) => {
+          const current = latest.current;
+          if (!current.result || current.storageKey !== storageKey || current.result.exercises[i] !== ex) return;
+          const questions = ex.questions.map((q, j) => {
+            const update = updates.find((item) => item.index === j);
+            if (!update || !pagesContain(current.result!.sampled_pages, update.picture.page)) return q;
+            const evidence_pages = Array.from(new Set([...q.evidence_pages, update.picture.page]));
+            return validPicture({ ...q, evidence_pages, picture: update.picture }, current.result!.sampled_pages)
+              ? { ...q, evidence_pages, picture: update.picture } : q;
+          });
+          const next = { ...current.result, exercises: current.result.exercises.map((item, j) => j === i ? { ...item, questions } : item) };
+          setResult(next); saveLocally(next, current.answers);
+        }}
         onChange={(values) => { const next = result.exercises.map((_, j) => j === i ? values : (answers[j] || []));
           setAnswers(next); saveLocally(result, next); }} />)}
       {result.warnings.map((w, i) => <p key={i} className="mt-1 text-xs">{w}</p>)}

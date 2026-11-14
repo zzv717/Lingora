@@ -409,6 +409,25 @@ def preview_vision_map(book_id: str, data: VisionMapPreviewIn, request: Request,
 
 
 from app.services.ai.vision_preview_check import PreviewCheckIn
+from app.services.ai.vision_pictures import PictureLocateIn
+
+
+@router.post("/{book_id}/vision-topic/pictures")
+def locate_vision_pictures(book_id: str, data: PictureLocateIn, request: Request,
+                           db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    limit(request, "vision_picture_locations", 30, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmlarini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    pages = data.page_numbers
+    if len(set(pages)) != len(pages) or any(n < 1 or n > book.page_count for n in pages):
+        raise ApiError("INVALID_PAGE_SELECTION", "Takrorlanmagan va kitob oralig'idagi PDF sahifalarini tanlang.", 422)
+    if any(not set(q.evidence_pages) <= set(pages) for q in data.questions):
+        raise ApiError("INVALID_PAGE_SELECTION", "Savol sahifasi tanlangan sahifalarga mos kelmaydi.", 422)
+    from app.services.ai.vision_pictures import locate_pictures
+    return locate_pictures(db, user.id, book, data)
 
 
 @router.post("/{book_id}/vision-topic/check")
