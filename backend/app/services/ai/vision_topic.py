@@ -2,7 +2,7 @@
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -12,12 +12,38 @@ from app.services.ai.provider import ChatMessage, extract_json, get_provider
 from app.services.ai.vision_map import render_pages
 
 
+class PictureRegion(BaseModel):
+    """Unverified image region, relative to the rendered, rotated PDF page (0–1000)."""
+    model_config = ConfigDict(extra='forbid')
+    page: int = Field(ge=1, strict=True)
+    bbox: tuple[float, float, float, float]
+
+    @model_validator(mode='after')
+    def bounds(self):
+        x0, y0, x1, y1 = self.bbox
+        if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
+            raise ValueError('invalid image region')
+        return self
+
+
 class Question(BaseModel):
     model_config = ConfigDict(extra='forbid')
     number: str = Field(max_length=40)
     prompt: str = Field(max_length=2000)
     options: list[str] = Field(max_length=12)
     evidence_pages: list[int] = Field(min_length=1, max_length=5)
+    picture: PictureRegion | None = None
+
+    @field_validator('picture', mode='before')
+    @classmethod
+    def safe_picture(cls, value):
+        # A bad crop must never make the rest of the exercise disappear.
+        if value is None:
+            return None
+        try:
+            return PictureRegion.model_validate(value)
+        except (ValidationError, ValueError, TypeError):
+            return None
 
 
 class Exercise(BaseModel):
@@ -55,10 +81,17 @@ one-based PDF image page numbers for each theory, exercise, and question. Keep o
 never invent unreadable questions, keys, missing context or material based on book memory. This
 is a partial sample, not full topic analysis. Explicitly flag ambiguities, missing illustrations,
 and possible continuations outside provided pages. Do not solve or provide any answer keys.
+For a numbered question that clearly refers to one individual picture, provide picture with its
+actual one-based PDF page and bbox [left, top, right, bottom] in 0–1000 relative page coordinates:
+(0,0) is the TOP LEFT of the displayed page, (1000,1000) is the BOTTOM RIGHT. Include the full
+illustration but not neighbouring pictures. Match the printed item number carefully. If location,
+association or page is uncertain, or the picture is shared, use null; never invent a region.
+The region is just a proposed crop from the original page, not an image or description.
 JSON: {"topic":"", "theory":[{"text":"", "evidence_pages":[1]}], "exercises":[{"number":"",
 "instruction":"", "exercise_type":"cloze|multiple_choice|transformation|error_correction|matching|categorization|dialogue|writing|speaking|other",
 "context":"", "evidence_pages":[1], "questions":[{"number":"", "prompt":"", "options":[],
-"evidence_pages":[1]}], "uncertainty":""}], "warnings":[]}. Unknown strings must be empty."""
+"evidence_pages":[1], "picture":{"page":1,"bbox":[100,100,300,300]}}], "uncertainty":""}], "warnings":[]}.
+picture may be null. Unknown strings must be empty."""
 
 
 def preview_topic(db: Session, user_id: str, book, page_numbers: list[int], topic: str):
@@ -84,6 +117,9 @@ def preview_topic(db: Session, user_id: str, book, page_numbers: list[int], topi
             for ex in result.exercises:
                 if not set(ex.evidence_pages) <= available or any(not set(q.evidence_pages) <= available for q in ex.questions):
                     raise ValueError('invalid exercise source')
+                for question in ex.questions:
+                    if question.picture and (question.picture.page not in available or question.picture.page not in question.evidence_pages):
+                        question.picture = None
             return {'sampled_pages': page_numbers, 'partial': True, 'provider': provider.name,
                     'model': response.model, **result.model_dump()}
         except (ValidationError, ValueError, TypeError):

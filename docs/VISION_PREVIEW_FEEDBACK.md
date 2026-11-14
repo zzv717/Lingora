@@ -1,6 +1,10 @@
 # Vision mavzu sinovida PDF va javoblar
 
-Mavzu xaritasi va mavzu sahifalari hali **qisman AI sinovi**, to'liq dars emas. Har bir ajratilgan mashqda «Asl PDF va rasmlarni ko'rish» tanlansa, kitobning asl PDF sahifasi PDF.js orqali ko'rsatiladi (alohida rasm qirqimi emas). PDF sahifa raqamlari bosma raqamlardan farq qilishi mumkin. AI ajratgan savollar asl kitob bilan mosligini foydalanuvchi tekshirishi kerak.
+Mavzu xaritasi va mavzu sahifalari hali **qisman AI sinovi**, to'liq dars emas. Har bir mashqning birinchi manba sahifasi sukut bo'yicha ochiladi; har bir mashqda «Asl PDF va rasmlarni ko'rish», savolda esa «Asl sahifada ko'rish» mavjud. PDF sahifa raqamlari bosma raqamlardan farq qilishi mumkin.
+
+Yangi Vision sinovi aniq bog'lash mumkin bo'lgan rasm uchun sahifa va 0–1000 oralig'idagi to'rtburchakni taklif qiladi. Chegara va sahifa tekshiriladi, rasmning o'zi brauzerda asl PDF'dan qirqiladi; AI yangi rasm yaratmaydi. **AI rasmni noto'g'ri bog'lashi yoki qirqishi mumkin** — qirqim yorliqlangan va asl sahifa bilan solishtirilishi shart. Noma'lum yoki yaroqsiz joylashuv ko'rsatilmaydi, asl PDF fallback hisoblanadi. Savollarni asl kitob bilan solishtiring; ularning tartibi va mazmuni mukammal aniqlanishi kafolatlanmaydi.
+
+Oldindan saqlangan sinovda rasm koordinatalari bo'lmasa, «Eski natijada rasmlar ko'rinmayaptimi?» orqali sahifalarni yana AI'ga yuborishga alohida rozilik berish mumkin. Faqat raqam, ko'rsatma, sahifa, savol raqami va matni yagona va to'liq mos bo'lsa rasm joyi qo'shiladi. Mavjud savollar va javoblar almashtirilmaydi; moslik aniqlanmasa asl sahifadan foydalaniladi. Ushbu qayta so'rov AI kvotasi va provayder shartlariga bo'ysunadi.
 
 Xarita, mavzu sinovi va javoblar faqat shu brauzerning localStorage xotirasida, foydalanuvchi va kitob bo'yicha saqlanadi. Serverdagi dars/StudentAnswer yozuvlariga qo'shilmaydi, qurilmalar o'rtasida sinxronlashmaydi; brauzer xotirasi tozalansa yo'qoladi. Umumiy qurilmada boshqa odam xotiradagi ma'lumotni ko'rishi mumkin. Mavzu natijasida mahalliy ma'lumotni o'chirish tugmasi bor. Saqlash muvaffaqiyatsiz bo'lsa xabar ko'rsatiladi. Bitta mavzuni qayta sinash uning oldingi mahalliy natijasi va javoblarini almashtiradi.
 
