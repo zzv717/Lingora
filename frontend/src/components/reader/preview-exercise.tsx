@@ -32,6 +32,14 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
     } catch (e) { setError(e instanceof Error ? e.message : "Tekshirish amalga oshmadi."); }
     finally { setBusy(false); }
   }
+  const summary = feedback && ex.questions.reduce((counts, _, i) => {
+    if (!answers[i]?.trim()) counts.unanswered++;
+    else if (feedback[i]?.correct === true) counts.correct++;
+    else if (feedback[i]?.correct === false) counts.wrong++;
+    else counts.uncertain++;
+    return counts;
+  }, { correct: 0, wrong: 0, uncertain: 0, unanswered: 0 });
+
   return <div className="mt-3 border-t border-slate-200 pt-2 dark:border-slate-700">
     <p className="font-medium">Mashq {ex.number || "raqami noma'lum"} · {ex.exercise_type} · {ex.questions.length} savol · PDF sahifa {ex.evidence_pages.join(", ")}</p>
     <p>{ex.instruction}</p>{ex.context && <p className="mt-1 whitespace-pre-wrap">{ex.context}</p>}
@@ -45,7 +53,7 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
           onChange(next); setFeedback(null);
         }} className="mt-1 block w-full rounded border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-800" />
       </label>
-      {feedback?.[i] && <p className="mt-1" role="status"><strong>{feedback[i].correct === null ? "Noaniq" : feedback[i].correct ? "AI: to'g'ri" : "AI: xato"}.</strong> {feedback[i].explanation_uz}</p>}
+      {feedback?.[i] && <p className="mt-1" role="status"><strong>{!answers[i]?.trim() ? "Javob kiritilmagan" : feedback[i].correct === null ? "Noaniq" : feedback[i].correct ? "AI: to'g'ri" : "AI: xato"}.</strong> {feedback[i].explanation_uz}</p>}
     </div>)}
     {ex.questions.length > 0 && <>
       <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
@@ -54,5 +62,10 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
       <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">AI bahosi taxminiy, javob kaliti emas; asl sahifa bilan solishtiring. Baholar dars natijalariga qo'shilmaydi.</p>
     </>}
     {error && <p role="alert" className="mt-2 text-red-700 dark:text-red-300">{error}</p>}
+    {summary && <div role="status" aria-label="Mashq natijasi" className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-800">
+      <p className="font-semibold">Ushbu mashq natijasi (AI taxmini)</p>
+      <p>To'g'ri: {summary.correct} · Xato: {summary.wrong} · Noaniq: {summary.uncertain} · Javob berilmagan: {summary.unanswered}</p>
+      <p className="mt-1 text-xs text-slate-500">Jami: {ex.questions.length} ta savol. Noaniq va javob berilmagan savollar to'g'ri yoki xato hisobiga kirmaydi.</p>
+    </div>}
   </div>;
 }
