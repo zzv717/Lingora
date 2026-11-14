@@ -28,6 +28,22 @@ log = logging.getLogger("lingora.tutor")
 router = APIRouter(prefix="/tutor", tags=["tutor"])
 
 
+from app.services.ai.translator import TranslationIn
+
+
+@router.post("/translate")
+def translate_text(data: TranslationIn, request: Request, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Translate explicitly provided text only, with per-user rate and AI quotas."""
+    limit(request, "translator", 60, 3600, user.id)
+    if not data.consent_text_to_provider:
+        raise ApiError("AI_TEXT_CONSENT_REQUIRED", "Matnni AI xizmatiga yuborishga rozilik kerak.", 422)
+    if not data.text.strip():
+        raise ApiError("EMPTY_TEXT", "Tarjima uchun matn kiriting.", 422)
+    from app.services.ai.translator import translate
+    return translate(db, user.id, data)
+
+
 @router.get("/status")
 def tutor_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.core.config import settings as cfg

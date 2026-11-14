@@ -4,6 +4,7 @@ import { useState } from "react";
 import { post } from "@/lib/api";
 import { Button } from "@/components/ui";
 import { PdfViewer } from "./pdf-viewer";
+import { Translator, type TranslationSeed } from "./translator";
 
 export type PreviewExerciseData = { number: string; instruction: string; exercise_type: string; context: string; uncertainty: string;
   evidence_pages: number[]; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[] }[] };
@@ -18,6 +19,8 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback[] | null>(null);
   const [error, setError] = useState("");
+  const [translationSeed, setTranslationSeed] = useState<TranslationSeed>();
+  const prepareTranslation = (text: string) => setTranslationSeed((prev) => ({ text, id: (prev?.id || 0) + 1 }));
 
   async function check() {
     if (!consent || busy || !answers.some((a) => a?.trim())) return;
@@ -40,32 +43,66 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange }: {
     return counts;
   }, { correct: 0, wrong: 0, uncertain: 0, unanswered: 0 });
 
-  return <div className="mt-3 border-t border-slate-200 pt-2 dark:border-slate-700">
-    <p className="font-medium">Mashq {ex.number || "raqami noma'lum"} · {ex.exercise_type} · {ex.questions.length} savol · PDF sahifa {ex.evidence_pages.join(", ")}</p>
-    <p>{ex.instruction}</p>{ex.context && <p className="mt-1 whitespace-pre-wrap">{ex.context}</p>}
-    {ex.uncertainty && <p className="text-xs text-amber-700 dark:text-amber-300">Noaniqlik: {ex.uncertainty}</p>}
-    <Button className="mt-2" variant="secondary" size="sm" onClick={() => setShowPage(!showPage)}>{showPage ? "PDF ni yashirish" : "Asl PDF va rasmlarni ko'rish"}</Button>
-    {showPage && <div className="mt-2 h-[480px]"><PdfViewer bookId={bookId} pageNumber={page} onGoTo={setPage} /></div>}
-    {ex.questions.map((q, i) => <div key={i} className="my-2 rounded border border-slate-200 p-2 text-xs dark:border-slate-700">
-      <label><span>{q.number ? `${q.number}. ` : ""}{q.prompt || "Rasmga qarang"}</span>{q.options.map((opt, k) => <span key={k} className="block">{opt}</span>)}
-        <span className="block text-slate-500">Javob (shu brauzerda saqlanadi)</span><textarea rows={2} maxLength={2000} disabled={busy} value={answers[i] || ""} onChange={(e) => {
-          const next = ex.questions.map((_, j) => j === i ? e.target.value : (answers[j] || ""));
-          onChange(next); setFeedback(null);
-        }} className="mt-1 block w-full rounded border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-800" />
-      </label>
-      {feedback?.[i] && <p className="mt-1" role="status"><strong>{!answers[i]?.trim() ? "Javob kiritilmagan" : feedback[i].correct === null ? "Noaniq" : feedback[i].correct ? "AI: to'g'ri" : "AI: xato"}.</strong> {feedback[i].explanation_uz}</p>}
-    </div>)}
-    {ex.questions.length > 0 && <>
-      <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
-        <span>PDF {pages.join(", ")}-sahifalari va ushbu mashq javoblarim tashqi AI xizmatiga yuborilishiga roziman. Xizmat ma'lumotdan foydalanishi yoki haq olishi mumkin.</span></label>
-      <Button className="mt-2" size="sm" variant="secondary" disabled={!consent || busy || !answers.some((a) => a?.trim())} onClick={check}>{busy ? "Tekshirilmoqda..." : "AI bilan tekshirish"}</Button>
-      <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">AI bahosi taxminiy, javob kaliti emas; asl sahifa bilan solishtiring. Baholar dars natijalariga qo'shilmaydi.</p>
-    </>}
-    {error && <p role="alert" className="mt-2 text-red-700 dark:text-red-300">{error}</p>}
-    {summary && <div role="status" aria-label="Mashq natijasi" className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-800">
-      <p className="font-semibold">Ushbu mashq natijasi (AI taxmini)</p>
-      <p>To'g'ri: {summary.correct} · Xato: {summary.wrong} · Noaniq: {summary.uncertain} · Javob berilmagan: {summary.unanswered}</p>
-      <p className="mt-1 text-xs text-slate-500">Jami: {ex.questions.length} ta savol. Noaniq va javob berilmagan savollar to'g'ri yoki xato hisobiga kirmaydi.</p>
-    </div>}
-  </div>;
+  const answeredCount = ex.questions.reduce((count, _, i) => count + (answers[i]?.trim() ? 1 : 0), 0);
+  const progress = ex.questions.length ? Math.round(answeredCount / ex.questions.length * 100) : 0;
+  const types: Record<string, string> = { cloze: "Bo'sh joyni to'ldirish", multiple_choice: "Variant tanlash", transformation: "Gapni o'zgartirish", error_correction: "Xatoni topish", matching: "Moslashtirish", categorization: "Guruhlash", dialogue: "Muloqot", writing: "Yozish", speaking: "Gapirish", other: "Mashq" };
+
+  return <article className="mt-5 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+    <header className="relative overflow-hidden bg-gradient-to-br from-indigo-700 via-indigo-600 to-violet-600 px-4 py-5 text-white sm:px-6 sm:py-6">
+      <div aria-hidden="true" className="pointer-events-none absolute -right-8 -top-14 h-40 w-40 rounded-full border-[24px] border-white/10" />
+      <div className="relative flex flex-wrap items-start justify-between gap-4">
+        <div><p className="text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-100">O'rganish va mashq qilish</p>
+          <h4 className="mt-1 text-xl font-bold sm:text-2xl">Mashq {ex.number || "raqami noma'lum"}</h4>
+          <p className="mt-1 text-xs text-indigo-100">{types[ex.exercise_type] || "Mashq"} · PDF sahifa {ex.evidence_pages.join(", ")}</p></div>
+        <div className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-right"><p className="text-lg font-bold">{answeredCount}<span className="text-sm font-normal text-indigo-100"> / {ex.questions.length}</span></p><p className="text-[11px] text-indigo-100">javob kiritildi</p></div>
+      </div>
+      <div className="relative mt-5 flex items-center gap-3"><div role="progressbar" aria-label="Javob kiritish jarayoni" aria-valuemin={0} aria-valuemax={ex.questions.length} aria-valuenow={answeredCount} className="h-2 flex-1 overflow-hidden rounded-full bg-white/20"><div className="h-full rounded-full bg-emerald-300 transition-all duration-300 motion-reduce:transition-none" style={{ width: `${progress}%` }} /></div><span className="text-xs font-semibold text-indigo-100">{progress}%</span></div>
+      <p className="relative mt-1 text-[11px] text-indigo-100">Bu faqat to'ldirish jarayoni, baho emas.</p>
+    </header>
+    <div className="space-y-5 p-4 sm:p-6">
+      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/60">
+        <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Topshiriq</p>
+          {ex.instruction && <button type="button" onClick={() => prepareTranslation(ex.instruction)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-900">Ko'rsatmani tarjima qilish ↗</button>}</div>
+        <p className="mt-2 whitespace-pre-wrap text-sm font-medium leading-relaxed text-slate-800 dark:text-slate-100">{ex.instruction || "Ko'rsatma uchun asl PDF sahifasiga qarang."}</p>
+        {ex.context && <p className="mt-3 whitespace-pre-wrap border-t border-slate-200 pt-3 text-sm leading-relaxed text-slate-600 dark:border-slate-700 dark:text-slate-300">{ex.context}</p>}
+      </div>
+      {ex.uncertainty && <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">Noaniqlik: {ex.uncertainty}</p>}
+      <Translator seed={translationSeed} />
+      <div><Button type="button" variant="secondary" size="sm" onClick={() => setShowPage(!showPage)} aria-expanded={showPage}>{showPage ? "PDF ni yashirish" : "Asl PDF va rasmlarni ko'rish"}</Button>
+        {showPage && <div className="mt-3 h-[480px] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700"><PdfViewer bookId={bookId} pageNumber={page} onGoTo={setPage} /></div>}
+      </div>
+      <div className="space-y-3">{ex.questions.map((q, i) => {
+        const verdict = feedback?.[i];
+        const answered = !!answers[i]?.trim();
+        return <div key={i} className={`rounded-2xl border p-4 transition-colors sm:p-5 ${verdict && answered && verdict.correct === true ? "border-emerald-300 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/20" : verdict && answered && verdict.correct === false ? "border-rose-300 bg-rose-50/40 dark:border-rose-800 dark:bg-rose-950/20" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
+          <div className="flex items-start gap-3"><span className="grid h-9 min-w-9 shrink-0 place-items-center rounded-xl bg-indigo-100 px-2 text-sm font-bold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200">{q.number || i + 1}</span>
+            <div className="min-w-0 flex-1"><div className="flex flex-wrap items-start justify-between gap-2"><p className="whitespace-pre-wrap text-sm font-semibold leading-relaxed text-slate-800 dark:text-slate-100">{q.prompt || "Rasmga qarang"}</p>
+              {q.prompt && <button type="button" onClick={() => prepareTranslation(q.prompt)} className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-950">Tarjima ↗</button>}</div>
+              {q.options.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{q.options.map((opt, k) => ex.exercise_type === "multiple_choice" ? <button type="button" key={k} disabled={busy} aria-pressed={answers[i] === opt} onClick={() => { const next = ex.questions.map((_, j) => j === i ? opt : (answers[j] || "")); onChange(next); setFeedback(null); }} className={`rounded-xl border px-3 py-2 text-left text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 ${answers[i] === opt ? "border-indigo-500 bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-100" : "border-slate-200 text-slate-600 hover:border-indigo-300 dark:border-slate-600 dark:text-slate-300"}`}>{opt}</button> : <span key={k} className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{opt}</span>)}</div>}
+              <label className="mt-4 block text-xs font-semibold text-slate-500 dark:text-slate-400">Javob <span className="font-normal">· shu brauzerda saqlanadi</span>
+                <textarea rows={2} maxLength={2000} disabled={busy} value={answers[i] || ""} onChange={(e) => {
+                  const next = ex.questions.map((_, j) => j === i ? e.target.value : (answers[j] || "")); onChange(next); setFeedback(null);
+                }} placeholder="Javobingizni shu yerga yozing…" className="mt-2 block w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-indigo-900" />
+              </label>
+              {verdict && <p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-relaxed text-slate-700 dark:bg-slate-800 dark:text-slate-200" role="status"><strong>{!answered ? "Javob kiritilmagan" : verdict.correct === null ? "Noaniq" : verdict.correct ? "AI: to'g'ri" : "AI: xato"}.</strong> {verdict.explanation_uz}</p>}
+            </div>
+          </div>
+        </div>;
+      })}</div>
+      {ex.questions.length > 0 && <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 dark:border-indigo-900 dark:bg-indigo-950/20">
+        <p className="text-sm font-bold text-indigo-950 dark:text-indigo-100">Tayyor bo'ldingizmi?</p>
+        <p className="mt-1 text-xs leading-relaxed text-indigo-800 dark:text-indigo-300">Javoblaringizni asl sahifa bilan birga AI yordamida tekshiring.</p>
+        <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-600 dark:text-slate-300"><input type="checkbox" className="mt-0.5" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
+          <span>PDF {pages.join(", ")}-sahifalari va ushbu mashq javoblarim tashqi AI xizmatiga yuborilishiga roziman. Xizmat ma'lumotdan foydalanishi yoki haq olishi mumkin.</span></label>
+        <Button className="mt-3" type="button" size="sm" disabled={!consent || busy || !answers.some((a) => a?.trim())} onClick={check}>{busy ? "Tekshirilmoqda..." : "AI bilan tekshirish"}</Button>
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">AI bahosi taxminiy, javob kaliti emas; asl sahifa bilan solishtiring. Baholar dars natijalariga qo'shilmaydi.</p>
+      </div>}
+      {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
+      {summary && <div role="status" aria-label="Mashq natijasi" className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-700 dark:bg-slate-800">
+        <p className="font-bold text-slate-900 dark:text-white">Ushbu mashq natijasi <span className="font-normal text-slate-500">· AI taxmini</span></p>
+        <p className="mt-2 font-medium">To'g'ri: {summary.correct} · Xato: {summary.wrong} · Noaniq: {summary.uncertain} · Javob berilmagan: {summary.unanswered}</p>
+        <p className="mt-1 text-xs text-slate-500">Jami: {ex.questions.length} ta savol. Noaniq va javob berilmagan savollar to'g'ri yoki xato hisobiga kirmaydi.</p>
+      </div>}
+    </div>
+  </article>;
 }

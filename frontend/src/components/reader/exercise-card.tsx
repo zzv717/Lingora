@@ -9,6 +9,7 @@ import { get, post, put } from "@/lib/api";
 import type { CheckResult, Exercise, Verdict } from "@/lib/types";
 import { trustedBlank } from "@/lib/reader-utils";
 import { Badge, Button, Card, Spinner, useToast } from "@/components/ui";
+import { Translator, type TranslationSeed } from "./translator";
 
 export type FbValues = Record<string, Record<string, string>>;
 
@@ -38,6 +39,7 @@ export function ExerciseCard({
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
   const [open, setOpen] = useState(true);
+  const [translationSeed, setTranslationSeed] = useState<TranslationSeed>();
   const [loaded, setLoaded] = useState(false);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -199,6 +201,10 @@ export function ExerciseCard({
 
       {open && (
         <>
+          <div className="mt-4">
+            {exercise.instructions && <button type="button" onClick={() => setTranslationSeed((prev) => ({ text: exercise.instructions, id: (prev?.id || 0) + 1 }))} className="mb-2 rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-950">Ko'rsatmani tarjima qilish ↗</button>}
+            <Translator seed={translationSeed} />
+          </div>
           {/* questions */}
           <div className="mt-4 space-y-4">
             {!loaded ? (
