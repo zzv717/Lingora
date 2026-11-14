@@ -21,6 +21,7 @@ def test_bad_regions_are_dropped_without_losing_question():
 def test_region_page_must_be_selected_and_cited(client, db, monkeypatch):
     h, book, _, _ = setup_scan(client, db)
     output = json.loads(topic_output())
+    output['exercises'][0]['depends_on_picture'] = True
     questions = output['exercises'][0]['questions']
     questions[0]['picture'] = {'page': 2, 'bbox': [100, 200, 300, 400]}
     questions[1]['picture'] = {'page': 1, 'bbox': [100, 200, 300, 400]}  # selected but not question evidence
@@ -31,6 +32,7 @@ def test_region_page_must_be_selected_and_cited(client, db, monkeypatch):
     res = client.post(f'/api/v1/books/{book}/vision-topic/preview', headers=h,
                       json={'page_numbers': [1, 2], 'topic': '', 'consent_images_to_provider': True})
     assert res.status_code == 200, res.text
+    assert res.json()['exercises'][0]['depends_on_picture'] is True
     qs = res.json()['exercises'][0]['questions']
     assert qs[0]['picture'] == {'page': 2, 'bbox': [100, 200, 300, 400]}
     assert all(qs[i]['picture'] is None for i in (1, 2, 3))
