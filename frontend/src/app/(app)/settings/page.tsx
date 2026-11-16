@@ -8,6 +8,31 @@ import type { Me, Profile } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, Input, Modal, Spinner, useToast } from "@/components/ui";
 
+function SignOutCard() {
+  const { logout } = useAuth();
+  const router = useRouter();
+  const { toast } = useToast();
+  const [signingOut, setSigningOut] = useState(false);
+  const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await logout();
+      router.replace("/login");
+    } catch {
+      toast("Hisobdan chiqib bo'lmadi. Qayta urinib ko'ring.", "error");
+      setSigningOut(false);
+    }
+  };
+  return <Card>
+    <h2 className="font-semibold text-slate-800 dark:text-slate-100">Hisob</h2>
+    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Hisobingiz o'chirilmaydi. Shu brauzerda saqlangan javoblar saqlanib qoladi.</p>
+    <Button className="mt-3" variant="secondary" type="button" onClick={signOut} loading={signingOut}>
+      {signingOut ? "Chiqilmoqda…" : "Hisobdan chiqish"}
+    </Button>
+  </Card>;
+}
+
 export default function SettingsPage() {
   const { me, refreshMe } = useAuth();
   const { theme, setTheme } = useTheme();
@@ -78,7 +103,10 @@ export default function SettingsPage() {
     return (
       <>
         <TopBar title="Sozlamalar" />
-        <main className="flex justify-center py-20"><Spinner className="h-8 w-8 text-brand-500" /></main>
+        <main className="mx-auto max-w-2xl space-y-6 px-4 py-6 lg:px-8">
+          <SignOutCard />
+          <div className="flex justify-center py-12"><Spinner className="h-8 w-8 text-brand-500" /></div>
+        </main>
       </>
     );
   }
@@ -95,6 +123,8 @@ export default function SettingsPage() {
             <Input label="Email" value={me?.email || ""} disabled />
           </div>
         </Card>
+
+        <SignOutCard />
 
         {/* Learning preferences */}
         <Card>
