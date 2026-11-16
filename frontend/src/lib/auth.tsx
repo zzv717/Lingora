@@ -61,7 +61,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const rt = localStorage.getItem("lingora.refresh");
-      if (rt) await post("/auth/logout", { refresh_token: rt }).catch(() => null);
+      // The backend can also revoke the HttpOnly refresh cookie when no local token exists.
+      await post("/auth/logout", rt ? { refresh_token: rt } : {}).catch(() => null);
     } finally {
       clearTokens();
       setMe(null);
