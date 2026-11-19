@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     ai_daily_request_limits_enabled: bool = False
     ai_daily_token_limit: int = 0  # Separate token safety cap, 0 = unlimited (per user, per day)
     vision_exercise_pages_per_day: int = 150  # applied only when daily request limits are enabled
+    # Book enrichment batches (vocabulary translations, lesson notes) are network-bound;
+    # run a small bounded pool so a dictionary with thousands of words does not wait
+    # for one provider round trip at a time.
+    ai_enrich_workers: int = 4
 
     # --- Plan limits (subscription-ready; MVP is free, no payments anywhere) ---
     free_max_books: int = 3
@@ -99,6 +103,12 @@ class Settings(BaseSettings):
     redis_url: str = ""
     pipeline_max_pages: int = 300
 
+    # OCR runs Tesseract as a subprocess and releases the GIL, so pages can be
+    # recognized concurrently. Bound both the worker count and the extra PDF
+    # memory held by worker documents (a large PDF must not multiply without limit).
+    ocr_max_workers: int = 4
+    ocr_max_parallel_mb: int = 256
+
     @field_validator("env", mode="before")
     @classmethod
     def _resolve_env(cls, v: str | None) -> str:
@@ -109,6 +119,16 @@ class Settings(BaseSettings):
         if raw in ("testing", "test"):
             return "test"
         return "dev"
+
+    @field_validator("ai_enrich_workers", "ocr_max_workers")
+    @classmethod
+    def _bounded_workers(cls, v: int) -> int:
+        return max(1, min(16, v))
+
+    @field_validator("ocr_max_parallel_mb")
+    @classmethod
+    def _bounded_ocr_memory(cls, v: int) -> int:
+        return max(32, min(1024, v))
 
     @field_validator("cors_origins")
     @classmethod

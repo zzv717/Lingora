@@ -32,6 +32,7 @@ from app.models import (
 from app.services.ai import enrich as ai_enrich
 from app.services.pdf_extractor import extract_document, validate_and_open
 from app.services.storage import get_storage
+from app.services.upload_cache import take as take_upload_bytes
 from app.services.structure_detector import DetectedExercise, DetectedQuestion, detect_structure
 
 log = logging.getLogger("lingora.pipeline")
@@ -89,7 +90,9 @@ class Pipeline:
         book.status = "processing"
         self.progress(2, "extracting")
 
-        content = get_storage().read(book.storage_path)
+        # Reuse the bytes already downloaded during finalization when the job
+        # runs in this process; otherwise fall back to storage.
+        content = take_upload_bytes(book.id) or get_storage().read(book.storage_path)
         doc = validate_and_open(content)
         book.page_count = doc.page_count
 
@@ -245,7 +248,10 @@ class Pipeline:
         self.progress(80, "ai_enrich")
         if settings.ai_configured:
             try:
-                deduped_warn.extend(ai_enrich.enrich_book(self.db, book.id))
+                deduped_warn.extend(ai_enrich.enrich_book(
+                    self.db, book.id,
+                    progress_cb=lambda fraction: self.progress(80 + fraction * 14, "ai_enrich"),
+                ))
             except Exception as e:
                 self.db.rollback()
                 log.warning("AI enrichment failed (continuing gracefully): %s", type(e).__name__)

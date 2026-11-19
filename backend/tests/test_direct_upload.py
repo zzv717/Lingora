@@ -102,6 +102,30 @@ def test_actual_just_under_50_mib(client, direct):
     assert r.status_code == 200, r.text
     assert r.json()["file_size_bytes"] == len(content)
 
+def test_inline_analysis_reuses_finalized_bytes(client, direct, monkeypatch):
+    """Finalization already downloaded the PDF; the inline job must not download it again."""
+    import app.api.v1.books as books
+    import app.services.pipeline as pipeline
+    from app.services.tasks import _run_pipeline_job
+
+    owner = headers(client, "handoff@example.com")
+    pdf = make_sample_book()
+    data = prepare(client, owner, len(pdf)).json()
+    direct.objects[data["path"]] = pdf
+    monkeypatch.setattr(books, "enqueue_book_analysis", _run_pipeline_job)
+
+    def forbidden_download():
+        raise AssertionError("analysis downloaded the same PDF twice")
+
+    monkeypatch.setattr(pipeline, "get_storage", forbidden_download)
+    complete = client.post(f"/api/v1/books/upload/{data['book_id']}/complete", headers=owner)
+    assert complete.status_code == 200, complete.text
+    job = client.get(f"/api/v1/books/{data['book_id']}/status", headers=owner).json()
+    assert job["status"] == "completed", job
+    book = client.get(f"/api/v1/books/{data['book_id']}", headers=owner).json()
+    assert book["page_count"] == 6
+
+
 def test_dont_expose_service_key(client, monkeypatch, direct):
     owner = headers(client, "keys@example.com")
     monkeypatch.setattr(settings, "supabase_publishable_key", "sb_secret_private")
