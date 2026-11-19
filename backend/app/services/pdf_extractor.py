@@ -4,8 +4,10 @@ Every page yields lines WITH bounding boxes and font sizes — the structure det
 uses these to find chapters, exercises and answer blanks, and the interactive reader
 uses them to position answer overlays on top of the original page.
 """
-import io
 import logging
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 import fitz  # PyMuPDF
@@ -135,8 +137,10 @@ def ocr_page_lines(page: fitz.Page, dpi: int = 200) -> list[dict[str, Any]]:
     import pytesseract
     from PIL import Image
 
-    pix = page.get_pixmap(dpi=dpi)
-    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    # Convert straight from the pixmap samples; a PNG encode/decode round trip
+    # per page was pure overhead (same pixels, same OCR result).
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     try:
         try:
             data = pytesseract.image_to_data(img, lang="eng+uzb", output_type=pytesseract.Output.DICT)
@@ -173,31 +177,126 @@ def ocr_page_lines(page: fitz.Page, dpi: int = 200) -> list[dict[str, Any]]:
     return lines
 
 
+def _run_ocr_parallel(doc: fitz.Document, needed: list[int],
+                      progress_cb: Callable[[float, str], None] | None,
+                      start: float, end: float, total: int,
+                      source_bytes: bytes | None = None) -> dict[int, list[dict[str, Any]]]:
+    """Recognize OCR-needed pages concurrently.
+
+    Tesseract runs as a subprocess and releases the GIL, so pages are recognized
+    in parallel threads. PyMuPDF Document/Page objects must not be shared
+    between threads, so each worker opens its own document from one serialized
+    copy of the PDF. Results are keyed by 0-based page index; a worker failure
+    yields no lines (the caller then reports OCR_FAILED, as before).
+    """
+    results: dict[int, list[dict[str, Any]]] = {}
+    workers = min(4, os.cpu_count() or 1, len(needed)) if ocr_available() else 1
+    # Bound the extra memory held by worker document copies. The pipeline can
+    # pass its already-loaded bytes so this does not serialize a large PDF again.
+    max_parallel_bytes = 128 * 1024 * 1024
+    pdf_bytes = source_bytes
+    if workers > 1 and pdf_bytes is not None:
+        workers = min(workers, max(1, max_parallel_bytes // max(len(pdf_bytes), 1)))
+    if workers > 1 and pdf_bytes is None:
+        try:
+            pdf_bytes = doc.tobytes()
+            workers = min(workers, max(1, max_parallel_bytes // max(len(pdf_bytes), 1)))
+        except Exception:
+            pdf_bytes = None
+    if workers <= 1 or pdf_bytes is None:
+        # Single worker (or serialization failed): sequential on the shared doc.
+        for index in needed:
+            try:
+                results[index] = ocr_page_lines(doc[index])
+            except Exception:
+                log.warning("OCR failed on page %s", index + 1)
+                results[index] = []
+        return results
+
+    thread_state = threading.local()
+    worker_docs: list[fitz.Document] = []
+    worker_docs_lock = threading.Lock()
+
+    def _ocr_one(index: int) -> tuple[int, list[dict[str, Any]]]:
+        try:
+            worker_doc = getattr(thread_state, "doc", None)
+            if worker_doc is None:
+                worker_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                thread_state.doc = worker_doc
+                with worker_docs_lock:
+                    worker_docs.append(worker_doc)
+            return index, ocr_page_lines(worker_doc[index])
+        except Exception:
+            log.warning("OCR failed on page %s", index + 1)
+            return index, []
+
+    done = 0
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="lingora-ocr") as pool:
+            futures = {pool.submit(_ocr_one, index): index for index in needed}
+            for future in as_completed(futures):
+                index, lines = future.result()
+                results[index] = lines
+                done += 1
+                progress_cb and progress_cb(start + (end - start) * done / max(total, 1), "extracting")
+    finally:
+        for worker_doc in worker_docs:
+            worker_doc.close()
+    return results
+
+
 def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], None] | None = None,
-                     start: float = 0.0, end: float = 100.0) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+                     start: float = 0.0, end: float = 100.0,
+                     source_bytes: bytes | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Returns (pages, warnings). pages have stable page_number (1-based) and layout data."""
-    pages: list[dict[str, Any]] = []
-    warnings: list[dict[str, Any]] = []
     total = doc.page_count
+    # Phase 1: native extraction for every page (sequential; PyMuPDF objects are
+    # not shared between threads). Keep canonical page text and geometry lines
+    # separate so the detector retains the established reading-order semantics.
+    raw_pages: list[dict[str, Any]] = []
     for i, page in enumerate(doc):
         progress_cb and progress_cb(start + (end - start) * i / max(total, 1), "extracting")
         lines = _extract_lines(page)
+        # Keep PyMuPDF's canonical text stream for detector compatibility; rawdict
+        # line ordering is optimized for geometry, not necessarily reading order.
         text = page.get_text("text").strip()
         images = _extract_images(page)
         # This is a layout indicator, not proof that an image contains text.
         # A text layer over a scanned page is also mixed and must be reviewed.
         page_type = "mixed" if text and images else "text" if text else "scanned" if images else "blank"
-        needs_ocr = len(text) < MIN_TEXT_CHARS_FOR_OCR
+        raw_pages.append({
+            "index": i, "lines": lines, "text": text, "images": images,
+            "page_type": page_type, "needs_ocr": len(text) < MIN_TEXT_CHARS_FOR_OCR,
+            "width": round(page.cropbox.width, 2), "height": round(page.cropbox.height, 2),
+            "crop_width": page.cropbox.width,
+        })
+
+    # Phase 2: OCR for pages that need it (never for mixed pages — their native
+    # layer must not be overwritten with unverified OCR).
+    needed = [r["index"] for r in raw_pages if r["needs_ocr"] and r["page_type"] != "mixed"]
+    ocr_results: dict[int, list[dict[str, Any]]] = {}
+    if needed:
+        # Always run the wrapper: it preserves the established empty-result and
+        # OCR_FAILED behavior when Tesseract is absent, while remaining testable.
+        ocr_results = _run_ocr_parallel(doc, needed, progress_cb, start, end, total, source_bytes)
+
+    # Phase 3: assemble pages and warnings in page order.
+    pages: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for r in raw_pages:
+        i = r["index"]
+        lines = r["lines"]
+        page_text = r["text"]
+        needs_ocr = r["needs_ocr"]
         ocr_used = False
-        page_text = text
-        if page_type == "mixed":
+        if r["page_type"] == "mixed":
             warnings.append({"page": i + 1, "code": "MIXED_PAGE_REVIEW_REQUIRED",
                 "message_uz": f"{i + 1}-sahifada matn va rasm bor; rasm ichidagi matn ko'rib chiqilishi kerak."})
         # Never overwrite the native layer of a mixed page with unverified OCR.
         # A short native layer leaves the page pending for manual preview.
-        if needs_ocr and page_type != "mixed":
-            ocr_lines = ocr_page_lines(page)
-            ocr_lines, layout = order_ocr_lines(ocr_lines, page.cropbox.width)
+        if needs_ocr and r["page_type"] != "mixed":
+            ocr_lines = ocr_results.get(i, [])
+            ocr_lines, layout = order_ocr_lines(ocr_lines, r["crop_width"])
             if layout != "original":
                 warnings.append({"page": i + 1, "code": "OCR_LAYOUT_REVIEW",
                                  "message_uz": f"{i + 1}-sahifaning ustun/jadval tartibi tekshirilishi kerak."})
@@ -221,12 +320,12 @@ def extract_document(doc: fitz.Document, progress_cb: Callable[[float, str], Non
                 })
         pages.append({
             "page_number": i + 1,
-            "width": round(page.cropbox.width, 2),
-            "height": round(page.cropbox.height, 2),
+            "width": r["width"],
+            "height": r["height"],
             "text": page_text,
             "lines": lines,
-            "images": images,
-            "page_type": page_type,
+            "images": r["images"],
+            "page_type": r["page_type"],
             "needs_ocr": needs_ocr and not ocr_used,
             "ocr_used": ocr_used,
         })
