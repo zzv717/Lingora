@@ -183,7 +183,10 @@ class SupabaseStorage(StorageBackend):
         import httpx
 
         try:
-            resp = httpx.delete(
+            # httpx.delete() has no json/content argument (TypeError); a DELETE with a
+            # body must go through httpx.request().
+            resp = httpx.request(
+                "DELETE",
                 f"{self.base}/object/{self.bucket}",
                 headers=self.headers,
                 json={"prefixes": [storage_path]},
@@ -195,7 +198,7 @@ class SupabaseStorage(StorageBackend):
         except ApiError:
             raise
         except Exception as e:
-            log.error("Supabase storage delete network error: %s", type(e).__name__)
+            log.error("Supabase storage delete network error: %r", e)
             raise ApiError("STORAGE_DELETE_FAILED", "Faylni o'chirishda xatolik yuz berdi.", 500)
 
 
