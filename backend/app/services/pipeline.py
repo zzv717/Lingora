@@ -8,6 +8,7 @@ First-pass content persistence is atomic; progress reporting outside it is separ
 """
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -31,7 +32,7 @@ from app.models import (
 from app.services.ai import enrich as ai_enrich
 from app.services.pdf_extractor import extract_document, validate_and_open
 from app.services.storage import get_storage
-from app.services.structure_detector import detect_structure
+from app.services.structure_detector import DetectedExercise, DetectedQuestion, detect_structure
 
 log = logging.getLogger("lingora.pipeline")
 
@@ -47,9 +48,15 @@ STAGES = [
 
 
 class Pipeline:
+    # Progress commits are DB round trips; committing on every page of a
+    # 300-page book costs hundreds of commits. Throttle them — the values are
+    # still updated in memory and persisted by the next commit.
+    PROGRESS_COMMIT_INTERVAL = 1.5
+
     def __init__(self, db: Session, job: ProcessingJob):
         self.db = db
         self.job = job
+        self._last_progress_commit = 0.0
 
     def progress(self, value: float, stage: str, *, commit: bool = True) -> None:
         stage_label = dict(STAGES).get(stage, stage)
@@ -57,7 +64,10 @@ class Pipeline:
         self.job.stage = stage
         self.job.stage_label_uz = stage_label
         if commit:
-            self.db.commit()
+            now = time.monotonic()
+            if value >= 100 or now - self._last_progress_commit >= self.PROGRESS_COMMIT_INTERVAL:
+                self.db.commit()
+                self._last_progress_commit = now
 
     def run(self) -> None:
         book = self.db.get(Book, self.job.book_id)
@@ -86,7 +96,7 @@ class Pipeline:
         pages, extraction_warnings = extract_document(
             doc,
             progress_cb=lambda v, s: self.progress(2 + v * 0.18, "extracting"),
-            start=0.0, end=100.0,
+            start=0.0, end=100.0, source_bytes=content,
         )
         doc.close()
 
@@ -153,10 +163,23 @@ class Pipeline:
             lesson_rows.append(row)
         self.db.flush()
 
+        # First lesson (in order) covering each page. setdefault preserves the
+        # "first match wins" semantics of the previous linear scan, but lookups
+        # are O(1) instead of O(lessons) per exercise/word.
+        lesson_by_page: dict[int, Lesson] = {}
+        for row in lesson_rows:
+            for pnum in range(row.page_start, row.page_end + 1):
+                lesson_by_page.setdefault(pnum, row)
+
         self.progress(45, "exercises", commit=False)
         # ---- persist exercises & questions ----
-        for ex in structure.exercises:
-            matching_lesson = next((l for l in lesson_rows if l.page_start <= ex.page_number <= l.page_end), None)
+        # Batched inserts: one flush per level (exercises, then questions) instead
+        # of one flush per row. On PostgreSQL every flush is a network round trip,
+        # so per-row flushing dominated book upload time. Nothing is committed
+        # until the single commit below, so a failure still rolls back everything.
+        exercise_rows: list[tuple[Exercise, DetectedExercise]] = []
+        for order, ex in enumerate(structure.exercises):
+            matching_lesson = lesson_by_page.get(ex.page_number)
             matching_ch = matching_lesson.chapter_id if matching_lesson else None
             ex_row = Exercise(
                 book_id=book.id, lesson_id=matching_lesson.id if matching_lesson else None,
@@ -164,12 +187,15 @@ class Pipeline:
                 instructions=ex.instructions, ref=ex.ref, page_number=ex.page_number,
                 source="book", bbox={"bbox": ex.bbox} if ex.bbox else None,
                 topic=ex.topic or (matching_lesson.topic if matching_lesson else ""),
-                explanation_uz="", order_index=len(self.db.new), detection="rule",
+                explanation_uz="", order_index=order, detection="rule",
                 needs_review=ex.needs_review,
             )
             self.db.add(ex_row)
-            self.db.flush()
+            exercise_rows.append((ex_row, ex))
+        self.db.flush()
 
+        question_rows: list[tuple[ExerciseQuestion, DetectedQuestion]] = []
+        for ex_row, ex in exercise_rows:
             for qi, q in enumerate(ex.questions):
                 q_row = ExerciseQuestion(
                     exercise_id=ex_row.id, order_index=qi, number=q.number, prompt=q.prompt,
@@ -179,13 +205,15 @@ class Pipeline:
                     explanation_uz="", needs_review=ex.needs_review or getattr(q, "needs_review", False),
                 )
                 self.db.add(q_row)
-                self.db.flush()
+                question_rows.append((q_row, q))
+        self.db.flush()
 
-                for opt in q.options:
-                    self.db.add(ExerciseOption(
-                        question_id=q_row.id, letter=opt["letter"], text=opt["text"],
-                        is_correct=opt.get("is_correct"),
-                    ))
+        for q_row, q in question_rows:
+            for opt in q.options:
+                self.db.add(ExerciseOption(
+                    question_id=q_row.id, letter=opt["letter"], text=opt["text"],
+                    is_correct=opt.get("is_correct"),
+                ))
 
         self.progress(65, "vocabulary", commit=False)
         # ---- persist vocabulary ----
@@ -195,7 +223,7 @@ class Pipeline:
             if not term or term.lower() in seen_terms:
                 continue
             seen_terms.add(term.lower())
-            matching_lesson = next((l for l in lesson_rows if l.page_start <= v["page_number"] <= l.page_end), None)
+            matching_lesson = lesson_by_page.get(v["page_number"])
             self.db.add(VocabularyWord(
                 book_id=book.id, lesson_id=matching_lesson.id if matching_lesson else None,
                 chapter_id=matching_lesson.chapter_id if matching_lesson else None,

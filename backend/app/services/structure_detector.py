@@ -229,8 +229,9 @@ def _finish_question(cur: dict[str, Any]) -> DetectedQuestion:
     prompt = cur["prompt"]
     blanks = []
     matches = list(BLANK_RE.finditer(prompt))
+    # Compute all blank boxes once; recomputing per match was O(blanks^2).
+    boxes = _blank_bboxes({"text": prompt, "chars": cur.get("chars", [])}, 0) if matches else []
     for i, m in enumerate(matches, 1):
-        boxes = _blank_bboxes({"text": prompt, "chars": cur.get("chars", [])}, 0)
         bbox = boxes[i - 1] if i - 1 < len(boxes) else None
         blanks.append({"id": f"b{i}", "bbox": bbox, "geometry": "native_chars" if bbox else "unlocated"})
     # build display prompt with {bN} placeholders
@@ -332,16 +333,22 @@ def _detect_answer_keys(pages: list[dict[str, Any]], structure: DetectedStructur
 
 def _attach_answer_keys(structure: DetectedStructure) -> None:
     """Match only unique explicit exercise+question refs, or globally unique unlabelled numbers."""
-    from collections import Counter
+    from collections import Counter, defaultdict
     refs = Counter(ex.ref.lower() for ex in structure.exercises)
     numbers = Counter(q.number for ex in structure.exercises for q in ex.questions)
+    # Index key entries once; scanning the whole list per question was O(Q*K).
+    labelled_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    unlabelled_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in structure.answer_key_entries:
+        if entry["exercise_ref"]:
+            labelled_index[(entry["exercise_ref"], entry["question_number"])].append(entry)
+        else:
+            unlabelled_index[entry["question_number"]].append(entry)
     for ex in structure.exercises:
         ref = ex.ref.lower()
         for q in ex.questions:
-            labelled = [e for e in structure.answer_key_entries if e["exercise_ref"] == ref
-                        and e["question_number"] == q.number] if refs[ref] == 1 else []
-            unlabelled = [e for e in structure.answer_key_entries if not e["exercise_ref"]
-                          and e["question_number"] == q.number] if numbers[q.number] == 1 else []
+            labelled = labelled_index.get((ref, q.number), []) if refs[ref] == 1 else []
+            unlabelled = unlabelled_index.get(q.number, []) if numbers[q.number] == 1 else []
             candidates = labelled or unlabelled
             if len(candidates) == 1 and candidates[0]["answers"]:
                 q.correct_answers = candidates[0]["answers"]
@@ -467,9 +474,10 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
             structure.exercises.append(_parse_exercise_block(header, body, page["page_number"], structure))
 
     # ---- matching: two-column layout when "match" instruction present ----
+    page_lookup = {p["page_number"]: p for p in pages}
     for ex in structure.exercises:
         if ex.exercise_type == "matching" and not any(q.matching_pairs for q in ex.questions):
-            _parse_two_column_matching(page_lookup={p["page_number"]: p for p in pages}, ex=ex)
+            _parse_two_column_matching(page_lookup=page_lookup, ex=ex)
 
     # ---- vocabulary & answer keys ----
     occupied = {ex.page_number for ex in structure.exercises}
