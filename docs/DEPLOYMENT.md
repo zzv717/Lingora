@@ -160,6 +160,8 @@ Deploydan keyin `https://<frontend-domain>/backend/api/v1/health` va
 | `AI_API_KEY` / `AI_MODEL` | AI uchun ✅ | — | kalit faqat serverda |
 | `AI_BASE_URL` | — | openai | Groq/OpenRouter/vLLM uchun o'zgartiring |
 | `AI_TIMEOUT_SECONDS` / `AI_MAX_RETRIES` | — | 60 / 2 | |
+| `AI_ENRICH_WORKERS` | — | 4 | lug'at/dars AI boyitishini parallel qiladi; provayder rate-limit qilsa pasaytiring |
+| `OCR_MAX_WORKERS` / `OCR_MAX_PARALLEL_MB` | — | 4 / 256 | skanerlangan sahifalarni parallel OCR qilish uchun ishchilar va xotira chegarasi |
 | `TASK_BACKEND` | — | `inline` | `celery` + `REDIS_URL`; `sync` faqat qisqa request-bound ishlar uchun |
 | `FREE_MAX_BOOKS` va boshqa plan limitlari | — | 3/25/100 | reja limitlari |
 | `SMTP_HOST/PORT/USER/PASSWORD/FROM` | — | — | parol tiklash emaili |

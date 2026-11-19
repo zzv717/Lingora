@@ -36,6 +36,7 @@ from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, J
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
+from app.services.upload_cache import stash as stash_upload_bytes
 from app.services.content_integrity import has_book_content
 
 log = logging.getLogger("lingora.books")
@@ -131,7 +132,10 @@ def complete_upload(book_id: str, request: Request, db: Session = Depends(get_db
     doc = validate_and_open(content)
     pages = doc.page_count
     doc.close()
-    del content  # release large file before the analysis downloads it again
+    # The inline worker starts in this process; hand over the bytes so analysis
+    # does not download the same object a second time. No-op for remote workers.
+    stash_upload_bytes(book.id, content)
+    del content
     # Compare-and-swap so concurrent finalize calls cannot create duplicate jobs.
     claimed = db.execute(update(Book).where(Book.id == book.id, Book.user_id == user.id,
                                             Book.status == "uploading").values(status="processing", page_count=pages))

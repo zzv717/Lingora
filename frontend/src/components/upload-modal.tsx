@@ -56,13 +56,15 @@ export function UploadModal({ open, onClose }: { open: boolean; onClose: () => v
 
   const poll = async (bookId: string): Promise<Job> => {
     for (let i = 0; i < 240; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
+      // Check immediately, then wait: an initial 1.5 s sleep only made short
+      // analyses feel slower than they are.
       const job = await api<Job | null>(`/books/${bookId}/status`);
       if (!job) throw new Error("Tahlil holati topilmadi.");
       setProgress(job.progress);
       setStage(job.stage_label_uz);
       if (job.status === "completed") return job;
       if (job.status === "failed") throw new Error(job.error_message || "Tahlil bajarilmadi");
+      await new Promise((r) => setTimeout(r, 1500));
     }
     throw new Error("Tahlil juda uzoq davom etmoqda. Keyinroq 'Kitoblarim' bo'limidan tekshiring.");
   };

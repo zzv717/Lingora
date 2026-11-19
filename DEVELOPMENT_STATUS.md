@@ -56,6 +56,21 @@ See `docs/AI_TUTOR_VISION_AUDIT.md`. A bounded consent-based Vision mapping and
 topic preview has been added, not a full mapping-first pipeline or tutor. Real
 AI/provider acceptance and durable, persistent topic analysis are not complete.
 
+## Book upload/analysis speed follow-up
+
+- Direct-upload finalization now hands the already-downloaded PDF bytes to the
+  inline analysis job, so the same object is not fetched from private storage
+  twice. Celery/request-bound workers miss this cache and still read from storage.
+- AI enrichment waves translate vocabulary and write lesson explanations with a
+  bounded thread pool instead of one provider round trip at a time. Quota checks,
+  usage rows and ORM writes stay on the calling thread; progress now advances
+  during the AI stage instead of freezing at 80%. Real provider latency and
+  provider rate limits are not benchmarked here.
+- Tesseract language detection is cached once (no failed `eng+uzb` trial on every
+  scanned page), and the OCR worker count/memory cap is configurable.
+- Backend: 157 tests passed locally (SQLite, stubbed AI provider, synthetic OCR).
+  Browser E2E and real 50 MiB scanned dictionaries remain unverified.
+
 ## Important remaining work
 
 - Browser and real-device E2E for overlay position, edits, focus, zoom, rotation,

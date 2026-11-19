@@ -1,5 +1,26 @@
 """Synthetic geometry tests; real scanned column layouts still need verification."""
+import sys
+from types import SimpleNamespace
+
 from app.services.ocr_layout import order_ocr_lines
+
+
+def test_ocr_language_is_detected_once(monkeypatch):
+    """Every scanned page must not retry a missing traineddata language."""
+    import app.services.pdf_extractor as pdf
+
+    monkeypatch.setattr(pdf, "_OCR_LANG", None)
+    calls = []
+
+    def get_languages(config):
+        calls.append(config)
+        return ["eng"]
+
+    monkeypatch.setitem(sys.modules, "pytesseract",
+                        SimpleNamespace(get_languages=get_languages))
+    assert pdf._ocr_lang() == "eng"
+    assert pdf._ocr_lang() == "eng"
+    assert len(calls) == 1
 
 
 def line(text, x, y, width=100):

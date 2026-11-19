@@ -112,6 +112,33 @@ def _extract_images(page: fitz.Page) -> list[dict[str, Any]]:
 
 
 _TESS_AVAILABLE: bool | None = None
+_OCR_LANG: str | None = None
+
+
+def _ocr_lang() -> str:
+    """Resolve OCR languages once, not once per page.
+
+    Trying `eng+uzb` and catching a TesseractError on every page doubles the
+    subprocess work when the Uzbek traineddata is not installed (a common
+    deployment). Cache the actual language list instead.
+    """
+    global _OCR_LANG
+    if _OCR_LANG is None:
+        try:
+            import pytesseract
+
+            langs = set(pytesseract.get_languages(config=""))
+            if "eng" in langs and "uzb" in langs:
+                _OCR_LANG = "eng+uzb"
+            elif "eng" in langs:
+                _OCR_LANG = "eng"
+            else:
+                _OCR_LANG = next(iter(sorted(langs)), "")
+        except Exception:
+            # Keep the historical fallback if language discovery is unavailable;
+            # a per-call TesseractError is handled by the caller.
+            _OCR_LANG = "eng+uzb"
+    return _OCR_LANG
 
 
 def ocr_available() -> bool:
@@ -132,20 +159,31 @@ def ocr_page_lines(page: fitz.Page, dpi: int = 200) -> list[dict[str, Any]]:
 
     Word boxes are retained for inspection; they are not character-level blank geometry.
     """
+    global _OCR_LANG
     if not ocr_available():
         return []
     import pytesseract
     from PIL import Image
 
+    lang = _ocr_lang()
+    if not lang:
+        log.warning("No OCR language data available")
+        return []
     pix = page.get_pixmap(dpi=dpi, alpha=False)
     # Convert straight from the pixmap samples; a PNG encode/decode round trip
     # per page was pure overhead (same pixels, same OCR result).
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     try:
         try:
-            data = pytesseract.image_to_data(img, lang="eng+uzb", output_type=pytesseract.Output.DICT)
+            data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
         except pytesseract.TesseractError:
-            data = pytesseract.image_to_data(img, lang="eng", output_type=pytesseract.Output.DICT)
+            # Language cache may be stale (traineddata changed at runtime): try
+            # English once, then remember it so later pages skip the failed call.
+            if lang == "eng":
+                raise
+            _OCR_LANG = "eng" if "eng" in lang.split("+") else lang.split("+")[0]
+            data = pytesseract.image_to_data(img, lang=_OCR_LANG,
+                                             output_type=pytesseract.Output.DICT)
     except (pytesseract.TesseractError, RuntimeError):
         log.warning("Local OCR failed on page %s", page.number + 1)
         return []
@@ -190,10 +228,10 @@ def _run_ocr_parallel(doc: fitz.Document, needed: list[int],
     yields no lines (the caller then reports OCR_FAILED, as before).
     """
     results: dict[int, list[dict[str, Any]]] = {}
-    workers = min(4, os.cpu_count() or 1, len(needed)) if ocr_available() else 1
+    workers = min(settings.ocr_max_workers, os.cpu_count() or 1, len(needed)) if ocr_available() else 1
     # Bound the extra memory held by worker document copies. The pipeline can
     # pass its already-loaded bytes so this does not serialize a large PDF again.
-    max_parallel_bytes = 128 * 1024 * 1024
+    max_parallel_bytes = settings.ocr_max_parallel_mb * 1024 * 1024
     pdf_bytes = source_bytes
     if workers > 1 and pdf_bytes is not None:
         workers = min(workers, max(1, max_parallel_bytes // max(len(pdf_bytes), 1)))
