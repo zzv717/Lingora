@@ -121,17 +121,15 @@ Sozlamalar (Vercel → Project → Settings):
 |---|---|
 | Root Directory | **bo'sh** (repo ildizi) |
 | Framework Preset | Next.js |
-| Install Command | `npm --prefix frontend ci` |
-| Build Command | `npm --prefix frontend run build` |
-| Output Directory | `frontend/.next` |
 | Production Branch | `main` |
-| Env: `BACKEND_URL` | `https://<render-xizmat>.onrender.com` (`/api/v1` qo'shmasdan) |
+| Env: `BACKEND_URL` | Vercel Services binding beradi; alohida backend bo'lsa `https://<render-xizmat>.onrender.com` (`/api/v1` qo'shmasdan) |
 | Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | faqat to'g'ridan-to'g'ri yuklash (TUS) ishlatilsa |
 
-Root Directory bo'sh bo'lishi shart: `vercel.json` ildizda turadi va u
-`npm --prefix frontend` buyruqlarini beradi. Root `frontend` qilib qo'yilsa,
-`vercel.json` topilmaydi va build standart `npm run build` bilan boshlanadi —
-ishlashi mumkin, lekin sozlamalar ikki joyda takrorlanadi.
+Ildizdagi `vercel.json` **Vercel Services** tavsifidir: `frontend` (Next.js) va
+`backend` (FastAPI) xizmatlari bitta loyihada, `frontend` esa `BACKEND_URL`
+binding'ini avtomatik oladi. Uni oddiy root-build sozlamalari bilan
+almashtirmang — sinab ko'rildi va preview deploy darhol yiqildi: loyiha aynan
+shu tavsif orqali xizmat qiladi.
 
 `BACKEND_URL` Next.js ishga tushganda o'qiladi (build vaqtida emas), shuning
 uchun Render manzili o'zgarsa faqat env o'zgaruvchini yangilash kifoya —
