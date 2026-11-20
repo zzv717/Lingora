@@ -267,6 +267,8 @@ class VocabWordOut(BaseModel):
     page_number: int
     lesson_id: Optional[str]
     needs_translation: bool
+    picture_page: Optional[int] = None
+    picture_bbox: Optional[list[float]] = None
 
 
 class VocabSessionItemOut(BaseModel):

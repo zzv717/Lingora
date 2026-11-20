@@ -185,6 +185,8 @@ export interface VocabWord {
   page_number: number;
   lesson_id: string | null;
   needs_translation: boolean;
+  picture_page?: number | null;
+  picture_bbox?: number[] | null;
 }
 
 export interface VocabItem {
