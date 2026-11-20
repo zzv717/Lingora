@@ -31,6 +31,16 @@ API kalit faqat backend muhitida turadi, frontendga chiqmaydi.
 Body: `{"consent_images_to_provider": true, "replace": false}`. Rozilik bo'lmasa 422.
 `replace=true` faqat avvalgi *vision* mashqlarni almashtiradi va ularda foydalanuvchi javoblari bo'lsa rad etadi.
 
+## Darsni boshlash oqimi (frontend)
+`lesson-start` sahifasidagi yagona karta bir marta rozilik oladi va bir marta tahlil qiladi
+(`POST /books/{id}/vision-map/preview`), so'ng aniqlangan mavzularni chip sifatida ko'rsatadi.
+Eng birinchi chip avtomatik tanlanadi va uning mashqlari darhol tayyorlanadi
+(`POST /books/{id}/vision-topic/preview`, tahlil qilingan sahifalar bilan). Boshqa chipni bosish
+qayta skan qilmaydi: natija `localStorage`dagi mavzu nusxasidan olinadi
+(`lingora.vision-topic.{user}.{book}.{topic}`), faqat nusxa yo'q bo'lsa bitta so'rov yuboriladi.
+Sahifa to'plami o'zgarsa, eski mavzu nusxalari ishlatilmaydi. Barcha natijalar faqat brauzerda
+saqlanadi; sessiyaga, darslarga yoki javob kalitlariga yozilmaydi.
+
 ## Limit
 Ilovaning kunlik AI so'rov va Vision sahifa limitlari hozircha o'chirilgan. `AI_DAILY_REQUEST_LIMITS_ENABLED=true` qilib qayta yoqish mumkin; shunda alohida `VISION_EXERCISE_PAGES_PER_DAY` limiti qo'llanadi va u umumiy 20/300/2000 AI chaqiruv limitidan hisoblanmaydi. Foydalanish hisobga olinadi. Alohida token limiti sozlangan bo'lsa, qisqa vaqtli so'rov limitlari va AI provayderining kvotalari hamon amal qiladi.
 

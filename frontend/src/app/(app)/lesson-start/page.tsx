@@ -8,7 +8,7 @@ import { planUrl, suggestLessons, type PlanOption } from "@/lib/lesson-plan";
 import type { Book, LessonProgress } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Button, Card, Spinner } from "@/components/ui";
-import { VisionMapPreview } from "@/components/reader/vision-map-preview";
+import { InfoHint, LessonVisionWorkflow } from "@/components/reader/lesson-vision-workflow";
 
 type Option = PlanOption & { title: string; topic: string; page_start: number; page_end: number;
   exercise_count: number; vocabulary_count: number; has_explanation: boolean;
@@ -49,6 +49,7 @@ export default function LessonStartPage() {
     return () => { active = false; };
   }, [bookId, optionsRetry]);
 
+  const hasGaps = !!data?.lessons.some((lesson) => lesson.pending_ocr_pages > 0 || !lesson.page_inventory_complete);
   const ready = (books || []).filter((book) => book.status === "ready");
   const available = (data?.lessons || []).filter((lesson) => !lesson.progress.locked).length;
   const target = Math.min(count, available);
@@ -65,11 +66,12 @@ export default function LessonStartPage() {
   };
   return <>
     <TopBar title="Darsni boshlash" />
-    <main className="mx-auto max-w-4xl space-y-5 px-4 py-6 lg:px-8">
+    <main className="mx-auto max-w-3xl space-y-5 px-4 py-6 lg:px-8">
       <Link href="/dashboard" className="text-sm text-brand-600 hover:underline">← Boshqaruv paneli</Link>
       <Card>
-        <h1 className="text-xl font-bold">Bugungi darsni tanlang</h1>
-        <p className="mt-1 text-sm text-slate-500">Avval kitob, keyin o'rganmoqchi bo'lgan mavzularingizni tanlang.</p>
+        <h1 className="flex items-center gap-2 text-xl font-bold">Bugungi darsni tanlang
+          <InfoHint text="Avval kitob, keyin o'rganmoqchi bo'lgan mavzularingizni tanlang. Sahifalar tahlilidan keyin mavzularni almashtirib ko'rishingiz mumkin." />
+        </h1>
         {error && <div className="mt-3"><p role="alert" className="text-sm text-red-600">{error}</p>
           <Button size="sm" variant="secondary" className="mt-2" onClick={() => bookId ? setOptionsRetry((n) => n + 1) : setBooksRetry((n) => n + 1)}>Qayta urinish</Button></div>}
         {books === null ? <Spinner className="mt-4 h-6 w-6" /> : ready.length === 0 ? <div className="mt-4 text-sm">
@@ -84,7 +86,9 @@ export default function LessonStartPage() {
       {loading && <div className="flex justify-center py-6"><Spinner className="h-6 w-6" /></div>}
       {data && <>
         <Card>
-          <h2 className="font-semibold">Nechta mavzu o'rganasiz?</h2>
+          <h2 className="flex items-center gap-2 font-semibold">Nechta mavzu o'rganasiz?
+            <InfoHint text="Dastlab davom etayotgan yoki boshlanmagan darslar tavsiya qilinadi; bu AI tavsiyasi emas. O'zingiz ham tanlovni o'zgartira olasiz. Sonni o'zgartirsangiz tavsiya yangilanadi." />
+          </h2>
           <div className="mt-3 flex flex-wrap gap-4 text-sm">
             <label className="flex items-center gap-2"><input type="radio" name="amount" checked={mode === "1"} onChange={() => chooseCount(1, "1")} />1 ta</label>
             <label className="flex items-center gap-2"><input type="radio" name="amount" checked={mode === "2"} onChange={() => chooseCount(2, "2")} />2 ta (standart)</label>
@@ -92,13 +96,13 @@ export default function LessonStartPage() {
             {mode === "many" && <label>Son: <input aria-label="Mavzular soni" type="number" min={1} max={20} value={count}
               onChange={(e) => chooseCount(Number(e.target.value), "many")} className="w-20 rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800" /></label>}
           </div>
-          <p className="mt-3 text-xs text-slate-500">Dastlab davom etayotgan yoki boshlanmagan darslar tavsiya qilinadi; bu AI tavsiyasi emas. O'zingiz ham tanlovni o'zgartira olasiz. Sonni o'zgartirsangiz tavsiya yangilanadi.</p>
           {count > available && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Hozir faqat {available} ta ochiq dars mavjud.</p>}
         </Card>
         <Card>
-          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">Mavzular · {selected.length}/{target} tanlandi</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="flex items-center gap-2 font-semibold">Mavzular · {selected.length}/{target} tanlandi
+            <InfoHint text="Ro'yxat mavjud dars yozuvlaridan olingan; u kitobning to'liq xaritasi ekanligi tasdiqlanmagan. Ko'rsatilgan sonlar saqlangan materiallar, sahifadagi barcha mashqlar soni emas." />
+          </h2>
             <Button size="sm" variant="secondary" onClick={() => setSelected(suggestLessons(data.lessons, count))} disabled={!available}>Tavsiyani tiklash</Button></div>
-          <p className="mt-1 text-xs text-slate-500">Ro'yxat mavjud dars yozuvlaridan olingan; u kitobning to'liq xaritasi ekanligi tasdiqlanmagan. Ko'rsatilgan sonlar saqlangan materiallar, sahifadagi barcha mashqlar soni emas.</p>
           {!data.lessons.length && <p className="mt-3 text-sm">Darslar aniqlanmadi. Kitob sahifasida xaritalash sinovidan foydalaning.</p>}
           <div className="mt-3 space-y-2">{data.lessons.map((lesson) => {
             const checked = selected.includes(lesson.id);
@@ -110,16 +114,9 @@ export default function LessonStartPage() {
               </span>
             </label>;
           })}</div>
-          {selected.length > 0 && <p className="mt-3 text-xs text-slate-500">Tanlov dars havolasida saqlanadi; mavjud javoblar va o'qish joyi odatdagidek serverda saqlanadi.</p>}
           <Button className="mt-4" onClick={start} disabled={!target || selected.length !== target}>Tanlangan darslarni boshlash →</Button>
         </Card>
-        {data.lessons.some((lesson) => lesson.pending_ocr_pages > 0 || !lesson.page_inventory_complete) && <Card>
-          <h2 className="font-semibold">Skan sahifalarda mashqlar yetishmasligi mumkin</h2>
-          <p className="mt-1 text-sm text-slate-500">Vision sinovi sahifalarni ko'rib chiqadi. Sinov natijasi va javoblar faqat shu brauzerda saqlanadi, dars mashqlariga qo'shilmaydi. Vision xizmati va yuborishga rozilik kerak.</p>
-          <details className="mt-3"><summary className="cursor-pointer text-sm text-brand-600">Vision orqali sahifalarni sinash</summary>
-            <VisionMapPreview key={bookId} bookId={bookId} pageCount={data.page_count} initialTopicCount={count} />
-          </details>
-        </Card>}
+        <LessonVisionWorkflow key={bookId} bookId={bookId} pageCount={data.page_count} gaps={hasGaps} />
       </>}
     </main>
   </>;

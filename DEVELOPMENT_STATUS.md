@@ -2,12 +2,19 @@
 
 **Status: incomplete / not production-ready as a full interactive workbook.**
 
-The current branch adds a dashboard lesson-start flow for existing lessons. It
-shows stored exercise/word counts, respects lesson locks, recommends up to two
-by existing progress (not AI), supports custom selection and navigation, and
-links to the existing reader. The plan is in the URL, not a persisted session.
-Scanned pages may have no detected exercises; the separate, consent-gated Vision
-preview remains temporary and does not create interactive lessons. See
+The lesson-start screen (`frontend/src/app/(app)/lesson-start/page.tsx`) now runs
+one unified, consent-gated Vision workflow in a single card
+(`frontend/src/components/reader/lesson-vision-workflow.tsx`): page input
+(`1, 2, 3`, ranges such as `1-3, 5`, at most five pages), one persistent consent,
+one primary action, then detected topics as chips with the exercises of the
+active topic. The first topic is selected automatically and its exercises load
+right after the scan; switching chips reuses the browser-local topic result and
+never re-scans. Topic results are cached per user/book/topic and are discarded
+when the scanned page set changes. The workflow is temporary and does not create
+interactive lessons or answer keys; it does not replace the lesson selection
+below it, which still follows stored lesson counts, locks and progress-based
+recommendation (not AI) and keeps the plan in the URL. The reader's book page
+keeps the earlier `vision-map-preview.tsx` component unchanged. See
 `docs/SCANNED_TEXTBOOK_STATUS.md` and `docs/AI_TUTOR_VISION_AUDIT.md`.
 Real Grammarway 3 and Round-Up samples were locally audited; Grammarway detection
 failed on all five requested pages. Browser end-to-end acceptance remains unverified.
