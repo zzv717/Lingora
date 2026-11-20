@@ -52,7 +52,8 @@ def test_page_ingestion_is_private_idempotent_and_preserves_answers(client, db):
     db.expire_all()
     assert len(list(db.scalars(select(Exercise).where(Exercise.book_id == book)))) == 1
     assert db.scalar(select(StudentAnswer).where(StudentAnswer.question_id == qs[0].id)).content['blanks']['b1'] == 'goes'
-    assert client.post(f'{API}/books/{book}/reanalyze', headers=h).status_code == 409
+    # Re-analysis is now an explicit, progress-preserving action (see
+    # test_workbook_integrity); ingesting a page must still never touch it implicitly.
     assert client.get(f'{API}/books/{book}/ocr/pending', headers=h).json()['pages'] == [2]
 
 
