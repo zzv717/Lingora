@@ -10,6 +10,7 @@ import { BrowserOCR } from "@/components/reader/browser-ocr";
 import { VisionMapPreview } from "@/components/reader/vision-map-preview";
 import { VisionExercises } from "@/components/reader/vision-exercises";
 import { RegionReview } from "@/components/reader/region-review";
+import { VocabPicture } from "@/components/reader/vocab-picture";
 
 const TYPE_LABELS: Record<string, string> = {
   fill_blank: "Bo'sh joy",
@@ -32,6 +33,7 @@ export default function BookDetailPage() {
   const [struct, setStruct] = useState<Structure | null>(null);
   const [error, setError] = useState("");
   const [aiWarning, setAiWarning] = useState("");
+  const [words, setWords] = useState<VocabWord[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -44,6 +46,10 @@ export default function BookDetailPage() {
       } catch (e) {
         setError(e instanceof Error ? e.message : "Yuklanmadi");
       }
+      // A short preview of the word list with its illustrations; an empty list is shown
+      // as empty, never as a fake success.
+      try { setWords((await get<VocabWord[]>(`/books/${id}/vocabulary`)).slice(0, 6)); }
+      catch { /* the rest of the page stays usable without it */ }
     })();
   }, [id]);
 
@@ -103,6 +109,26 @@ export default function BookDetailPage() {
               </Button>
             </div>
           </div>
+          {words.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-slate-800 dark:text-slate-100">Lug'at namoyishi</h3>
+              <Link href="/vocabulary" className="text-sm text-brand-600 hover:underline">Butun lug'atni ochish →</Link>
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Rasmlar kitobning asl sahifasidan yuqori aniqlikda qirqib olinadi.</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {words.map((w) => (
+                <div key={w.id} className="min-w-0 rounded-xl border border-slate-200 px-3 py-2.5 dark:border-slate-700">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <span className="break-words font-semibold text-slate-900 dark:text-slate-100">{w.term}</span>
+                    {w.part_of_speech && <Badge>{w.part_of_speech}</Badge>}
+                  </div>
+                  {w.translation_uz && <p className="mt-1 break-words text-sm text-slate-600 dark:text-slate-300">{w.translation_uz}</p>}
+                  {!w.translation_uz && w.definition_en && <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">{w.definition_en}</p>}
+                  {w.picture_page && w.picture_bbox && <VocabPicture bookId={id} wordId={w.id} term={w.term} />}
+                </div>
+              ))}
+            </div>
+          </div>}
           <VisionMapPreview bookId={id} pageCount={struct.book.page_count} />
           <VisionExercises bookId={id} pageCount={struct.book.page_count} onUpdate={() => {
             get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});

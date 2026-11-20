@@ -29,3 +29,7 @@ frontend/public/ocr/
 # Vision debug renders and verification reports (generated artifacts)
 backend/data/vision-debug/
 backend/data/verify/
+
+# The book used for manual verification (copyrighted, downloaded from Drive)
+google_drive/
+frontend/tsconfig.tsbuildinfo

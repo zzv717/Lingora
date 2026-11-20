@@ -5,9 +5,11 @@ import { get, post } from "@/lib/api";
 import type { Book, Structure, VocabSession, VocabWord } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, EmptyState, Spinner, useToast } from "@/components/ui";
+import { VocabPicture } from "@/components/reader/vocab-picture";
 
 export default function VocabularyPage() {
   const [books, setBooks] = useState<Book[] | null>(null);
+  const [polling, setPolling] = useState(0);
   const [selected, setSelected] = useState<string>("");
   const [struct, setStruct] = useState<Structure | null>(null);
   const [words, setWords] = useState<VocabWord[]>([]);
@@ -38,6 +40,23 @@ export default function VocabularyPage() {
       setWords(w);
     })().catch(() => toast("Lug'at yuklanmadi", "error"));
   }, [selected, toast]);
+
+  // A book that is still being analysed is not a dead end: keep the screen informative
+  // and refresh until it becomes ready instead of showing "no vocabulary".
+  const processing = (books || []).filter((b) => b.status === "processing" || b.status === "uploaded");
+  useEffect(() => {
+    if (!processing.length) return;
+    const timer = setInterval(() => setPolling((n) => n + 1), 5000);
+    return () => clearInterval(timer);
+  }, [processing.length]);
+  useEffect(() => {
+    if (!polling) return;
+    get<Book[]>("/books").then((list) => {
+      setBooks(list);
+      const ready = list.find((x) => x.status === "ready");
+      if (ready) setSelected((current) => current || ready.id);
+    }).catch(() => {});
+  }, [polling]);
 
   const startReview = async (lessonId?: string) => {
     setStarting(true);
@@ -88,6 +107,20 @@ export default function VocabularyPage() {
                 </button>
               ))}
             </div>
+
+            {processing.length > 0 && !readyBooks.length && (
+              <Card className="text-sm text-slate-600 dark:text-slate-300">
+                <p className="font-semibold">Kitob hali tahlil qilinmoqda</p>
+                <p className="mt-1">Lug'at sahifalari tayyor bo'lishi bilan shu yerda ko'rinadi. Kuting — bu sahifa o'zi yangilanadi.</p>
+              </Card>
+            )}
+
+            {readyBooks.length > 0 && !words.length && struct && (
+              <Card className="text-sm text-slate-600 dark:text-slate-300">
+                <p className="font-semibold">Bu kitobda lug'at yozuvlari topilmadi</p>
+                <p className="mt-1">Kitob matnli lug'at sahifalaridan iborat bo'lmasa, so'zlar aniqlanmaydi. Kitob sahifasidagi «Kitob tahlili» bo'limidan Vision AI bilan tekshirib ko'rish mumkin.</p>
+              </Card>
+            )}
 
             <label className="block">
               <span className="sr-only">Lug'atdan so'z yoki tarjima qidirish</span>
@@ -151,7 +184,12 @@ export default function VocabularyPage() {
                             <p className="mt-1 break-words text-base leading-7 text-slate-600 dark:text-slate-300">
                               {w.needs_translation ? "Tarjima tekshirilmagan — testga kiritilmaydi" : w.translation_uz}
                             </p>
-                            {w.definition_en && <p className="mt-1 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{w.definition_en}</p>}
+                            {/* The illustration is cropped from the original PDF, so it stays sharp. */}
+                            {w.picture_page && w.picture_bbox && (
+                              <VocabPicture bookId={selected} wordId={w.id} term={w.term} />
+                            )}
+                            {w.definition_en && <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{w.definition_en}</p>}
+                            {w.example_sentence && <p className="mt-1 break-words text-sm italic leading-6 text-slate-500 dark:text-slate-400">{w.example_sentence}</p>}
                           </div>
                         ))}
                       </div>

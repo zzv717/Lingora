@@ -312,6 +312,25 @@ def lesson_options(book_id: str, db: Session = Depends(get_db), user: User = Dep
                                   .group_by(VocabularyWord.lesson_id)).all())
     page_states = list(db.execute(select(BookPage.page_number, BookPage.needs_ocr)
                                   .where(BookPage.book_id == book.id)).all())
+    # Words that never got a lesson assignment (dictionary-style books, where units are
+    # recognised as chapters, not lessons) still belong to the book: report them in one
+    # extra pseudo-lesson so the vocabulary screen can show every page of the book.
+    orphans = list(db.scalars(select(VocabularyWord).where(
+        VocabularyWord.book_id == book.id, VocabularyWord.lesson_id.is_(None))
+        .order_by(VocabularyWord.page_number, VocabularyWord.term)).all())
+    pages = sorted({w.page_number for w in orphans})
+    untranslated = sum(1 for w in orphans if w.needs_translation)
+    unassigned = None
+    if orphans:
+        unassigned = {
+            "id": "unassigned", "title": "Boshqa lug'at yozuvlari",
+            "topic": "", "page_start": pages[0], "page_end": pages[-1],
+            "exercise_count": 0, "vocabulary_count": len(orphans),
+            "has_explanation": False, "pending_ocr_pages": 0, "page_inventory_complete": True,
+            "progress": {"status": "not_started", "exercises_checked": 0, "time_spent_seconds": 0,
+                         "last_page": 0, "last_visited_at": None, "vocab_gate_passed": False,
+                         "has_vocabulary": untranslated == 0, "locked": False},
+        }
     return {"book_id": book.id, "page_count": book.page_count, "lessons": [{
         "id": lesson.id, "title": lesson.title, "topic": lesson.topic,
         "page_start": lesson.page_start, "page_end": lesson.page_end,
@@ -324,7 +343,7 @@ def lesson_options(book_id: str, db: Session = Depends(get_db), user: User = Dep
                                        if lesson.page_start <= page <= lesson.page_end)
                                    == max(0, lesson.page_end - lesson.page_start + 1),
         "progress": progress[lesson.id],
-    } for lesson in lessons]}
+    } for lesson in lessons] + ([unassigned] if unassigned else [])}
 
 
 @router.get("/{book_id}/structure", response_model=BookStructureOut)

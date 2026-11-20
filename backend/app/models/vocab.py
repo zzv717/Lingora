@@ -34,6 +34,11 @@ class VocabularyWord(Base, UuidPk, Timestamps):
     page_number: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     source: Mapped[str] = mapped_column(String(16), default="book", nullable=False)  # book|ai|manual
     needs_translation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Where the word's illustration sits on the ORIGINAL PDF page, as a normalized
+    # [x1, y1, x2, y2] box (0..1). Cropped in the browser from the authenticated PDF,
+    # never re-generated, so the picture stays sharp at any screen size.
+    picture_page: Mapped[Optional[int]] = mapped_column(Integer, default=None)
+    picture_bbox: Mapped[Optional[Any]] = mapped_column(JSON, default=None)
 
     book: Mapped["Book"] = relationship(back_populates="vocabulary")  # noqa: F821
 

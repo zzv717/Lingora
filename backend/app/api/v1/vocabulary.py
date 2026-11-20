@@ -1,7 +1,8 @@
-"""Vocabulary: word lists, challenge sessions (with lesson gating), SM-2 review flow."""
+"""Vocabulary: word lists, word illustrations, challenge sessions, SM-2 review flow."""
+import base64
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -35,14 +36,51 @@ router = APIRouter(tags=["vocabulary"])
 
 
 @router.get("/books/{book_id}/vocabulary", response_model=list[VocabWordOut])
-def book_vocabulary(book_id: str, lesson_id: str = "", db: Session = Depends(get_db),
-                    user: User = Depends(get_current_user)):
+def book_vocabulary(book_id: str, lesson_id: str = "", limit_words: int = Query(default=2000, ge=1, le=5000),
+                    offset: int = Query(default=0, ge=0),
+                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Every word of the book, in page order.
+
+    A dictionary book has hundreds of words (4000 Essential English Words 1 has 600), so
+    the old fixed limit of 500 silently hid the rest; paging is explicit instead.
+    """
     owned_book(db, user, book_id)
     q = select(VocabularyWord).where(VocabularyWord.book_id == book_id)
     if lesson_id:
         q = q.where(VocabularyWord.lesson_id == lesson_id)
-    words = db.scalars(q.order_by(VocabularyWord.page_number, VocabularyWord.term).limit(500)).all()
+    words = db.scalars(q.order_by(VocabularyWord.page_number, VocabularyWord.term)
+                       .offset(offset).limit(limit_words)).all()
     return words
+
+
+@router.get("/books/{book_id}/vocabulary/{word_id}/picture")
+@router.get("/books/{book_id}/vocabulary/{word_id}/picture.png")
+def word_picture(book_id: str, word_id: str, request: Request, as_json: bool | None = Query(default=None),
+                 max_edge: int = Query(default=1000, ge=200, le=2400),
+                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Illustration of one word, cropped from the ORIGINAL PDF page.
+
+    The stored box is normalized, so the crop is rendered at a real, high resolution
+    (>= 200 DPI) instead of a downscaled screenshot: pictures stay sharp on retina
+    screens and in full-screen view. Only the authenticated owner can read it.
+    """
+    book = owned_book(db, user, book_id)
+    word = db.get(VocabularyWord, word_id)
+    if not word or word.book_id != book.id:
+        raise ApiError("WORD_NOT_FOUND", "So'z topilmadi.", 404)
+    if not word.picture_page or not word.picture_bbox:
+        raise ApiError("PICTURE_NOT_FOUND", "Bu so'z uchun rasm aniqlanmagan.", 404)
+    from app.services.ai import vision_regions
+    png = vision_regions.crop_png(book, word.picture_page, list(word.picture_bbox),
+                                  pad_ratio=0.01, dpi=220, max_edge=max_edge)
+    # "/picture.png" is the raw image; "/picture" is JSON unless ?as_json=false is passed.
+    raw = request.url.path.endswith(".png") if as_json is None else not as_json
+    if raw:
+        return Response(content=png, media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=86400"})
+    return {"word_id": word.id, "page": word.picture_page, "bbox": list(word.picture_bbox),
+            "coordinate_space": "normalized_0_1",
+            "data_url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}
 
 
 @router.get("/vocabulary/due")

@@ -843,7 +843,8 @@ def save_debug_image(book, page_number: int, regions: list[dict[str, Any]],
     return path
 
 
-def crop_png(book, page_number: int, bbox: list[float], pad_ratio: float = 0.015) -> bytes:
+def crop_png(book, page_number: int, bbox: list[float], pad_ratio: float = 0.015,
+             dpi: int | None = None, max_edge: int | None = None) -> bytes:
     """Crop the ORIGINAL PDF page (>=150 DPI) and return PNG bytes.
 
     The stored box is normalized, so the pixel rectangle is derived from the real page
@@ -868,9 +869,15 @@ def crop_png(book, page_number: int, bbox: list[float], pad_ratio: float = 0.015
             raise ApiError("INVALID_PAGE_SELECTION", "Sahifa raqami kitob oralig'ida emas.", 422)
         page = doc[page_number - 1]
         area = page.rect
-        zoom = max(settings.vision_region_dpi, 150) / 72.0
-        zoom = min(zoom, settings.vision_region_max_pixels / (max(area.width, area.height) or 1.0))
         x1, y1, x2, y2 = pad_bbox(bbox, pad_ratio)
+        zoom = max(dpi or settings.vision_region_dpi, 150) / 72.0
+        if max_edge:
+            # A tight illustration crop can be rendered much sharper than the whole-page
+            # provider limit: bound the OUTPUT size, not the page size.
+            crop_points = max((x2 - x1) * area.width, (y2 - y1) * area.height) or 1.0
+            zoom = min(zoom, max_edge / crop_points)
+        else:
+            zoom = min(zoom, settings.vision_region_max_pixels / (max(area.width, area.height) or 1.0))
         # Clip is expressed in PDF points, then rendered at the requested zoom.
         clip = fitz.Rect(area.x0 + x1 * area.width, area.y0 + y1 * area.height,
                          area.x0 + x2 * area.width, area.y0 + y2 * area.height) & area

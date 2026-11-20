@@ -101,7 +101,6 @@ class Pipeline:
             progress_cb=lambda v, s: self.progress(2 + v * 0.18, "extracting"),
             start=0.0, end=100.0, source_bytes=content,
         )
-        doc.close()
 
         self.progress(22, "ocr")
         warnings = list(extraction_warnings)
@@ -116,6 +115,17 @@ class Pipeline:
 
         self.progress(32, "structuring")
         structure = detect_structure(pages)
+
+        # Dictionary-style books embed every illustration in one background image. The
+        # per-word picture is then found geometrically from the headword position, still
+        # without guessing: a word with no detected illustration simply has none.
+        if any(v.get("bbox") and not v.get("picture") for v in structure.vocabulary):
+            from app.services.dictionary_pictures import attach_word_pictures
+            try:
+                attach_word_pictures(doc, structure.vocabulary)
+            except Exception:
+                log.warning("Dictionary picture detection skipped", exc_info=True)
+        doc.close()
 
         # Merge warnings
         all_warnings = warnings + structure.warnings
@@ -236,6 +246,8 @@ class Pipeline:
                 part_of_speech=v.get("part_of_speech", ""),
                 page_number=v["page_number"], source="book",
                 needs_translation=v.get("needs_translation", False),
+                picture_page=(v.get("picture") or {}).get("page_number"),
+                picture_bbox=(v.get("picture") or {}).get("bbox"),
             ))
 
         # ---- record answer key pages ----
