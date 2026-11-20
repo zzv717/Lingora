@@ -23,7 +23,7 @@ def test_postgres_ddl_and_models_compatibility():
 
 
 def test_supabase_schema_rls_policies_count():
-    """Verify database/supabase_schema.sql contains exactly 27 tables with matching RLS policies."""
+    """Verify database/supabase_schema.sql contains exactly 30 tables with matching RLS policies."""
     import pathlib
     schema_file = pathlib.Path(__file__).resolve().parent.parent.parent / "database" / "supabase_schema.sql"
     assert schema_file.exists()
@@ -32,16 +32,17 @@ def test_supabase_schema_rls_policies_count():
     # Check lingora_current_user_id function exists
     assert "lingora_current_user_id()" in content
 
-    # Check each of the 27 tables has ENABLE ROW LEVEL SECURITY
+    # Check each of the 30 tables has ENABLE ROW LEVEL SECURITY
     tables = [
         "users", "profiles", "refresh_tokens", "password_resets", "subscriptions",
         "books", "processing_jobs", "book_pages", "chapters", "lessons",
         "exercises", "exercise_questions", "exercise_options", "answer_keys",
         "student_answers", "exercise_attempts", "vocabulary_words", "vocabulary_sessions",
         "vocabulary_attempts", "vocabulary_progress", "learning_progress", "activity_days",
-        "revision_sessions", "revision_items", "ai_conversations", "ai_messages", "usage_events"
+        "revision_sessions", "revision_items", "ai_conversations", "ai_messages", "usage_events",
+        "vision_exercise_regions", "vision_page_region_cache", "vision_region_corrections",
     ]
-    assert len(tables) == 27
+    assert len(tables) == 30
     for t in tables:
         assert f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;" in content
         assert f'CREATE POLICY "{t}_owner_all" ON {t}' in content

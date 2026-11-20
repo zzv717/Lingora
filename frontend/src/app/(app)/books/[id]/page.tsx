@@ -9,6 +9,7 @@ import { Badge, Button, Card, Spinner } from "@/components/ui";
 import { BrowserOCR } from "@/components/reader/browser-ocr";
 import { VisionMapPreview } from "@/components/reader/vision-map-preview";
 import { VisionExercises } from "@/components/reader/vision-exercises";
+import { RegionReview } from "@/components/reader/region-review";
 
 const TYPE_LABELS: Record<string, string> = {
   fill_blank: "Bo'sh joy",
@@ -104,6 +105,9 @@ export default function BookDetailPage() {
           </div>
           <VisionMapPreview bookId={id} pageCount={struct.book.page_count} />
           <VisionExercises bookId={id} pageCount={struct.book.page_count} onUpdate={() => {
+            get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});
+          }} />
+          <RegionReview bookId={id} pageCount={struct.book.page_count} onUpdate={() => {
             get<Structure>(`/books/${id}/structure`).then(setStruct).catch(() => {});
           }} />
           <BrowserOCR bookId={id} pageCount={struct.book.page_count} pending={cov.pages_needing_ocr || 0} onUpdate={() => {

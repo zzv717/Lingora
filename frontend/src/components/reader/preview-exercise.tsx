@@ -8,14 +8,21 @@ import { Translator, type TranslationSeed } from "./translator";
 import { usePdfPictureCrops, validPicture, type PictureRegion } from "./pdf-picture-crops";
 import { PictureSelector } from "./picture-selector";
 import { isPictureExercise } from "./auto-picture-locations";
+import { ExerciseCrop, type CropCorrection } from "./exercise-crop";
 
 export type PreviewExerciseData = { number: string; instruction: string; exercise_type: string; context: string; uncertainty: string;
-  evidence_pages: number[]; depends_on_picture?: boolean; questions: { number: string; prompt: string; options: string[]; evidence_pages: number[]; picture?: PictureRegion | null }[] };
+  evidence_pages: number[]; depends_on_picture?: boolean;
+  /** Optional crop of the whole exercise from the original PDF (preview is browser-local). */
+  region?: { id: string; bbox: [number, number, number, number]; page_number?: number;
+    confidence?: number; needs_review?: boolean } | null;
+  questions: { number: string; prompt: string; options: string[]; evidence_pages: number[]; picture?: PictureRegion | null }[] };
 type Feedback = { index: number; correct: boolean | null; explanation_uz: string };
 
-export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPicturesChange, defaultShowPage = false, active = true, externalBusy = false }: {
+export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPicturesChange, onRegionChange, defaultShowPage = false, active = true, externalBusy = false }: {
   bookId: string; ex: PreviewExerciseData; pages: number[]; answers: string[]; onChange: (values: string[]) => void;
   onPicturesChange?: (updates: { index: number; picture: PictureRegion }[]) => void;
+  /** Keeps a corrected exercise box in the saved preview (browser + server copy). */
+  onRegionChange?: (correction: CropCorrection) => void;
   defaultShowPage?: boolean; active?: boolean; externalBusy?: boolean;
 }) {
   const [showPage, setShowPage] = useState(defaultShowPage);
@@ -40,6 +47,8 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPictur
   const [pictureConsent, setPictureConsent] = useState(false);
   const [locating, setLocating] = useState(false);
   const [pictureMessage, setPictureMessage] = useState("");
+  // The region box belongs to the exercise's own page, not to a cited neighbour page.
+  const regionPage = ex.region?.page_number || ex.evidence_pages[0] || pages[0];
   const pictureExercise = isPictureExercise(ex, pages);
   const missingPictures = pictureExercise && ex.questions.some((q) => !validPicture(q, pages));
   async function locatePictures() {
@@ -104,6 +113,10 @@ export function PreviewExercise({ bookId, ex, pages, answers, onChange, onPictur
         {ex.context && <p className="mt-3 whitespace-pre-wrap border-t border-slate-200 pt-3 text-sm leading-relaxed text-slate-600 dark:border-slate-700 dark:text-slate-300">{ex.context}</p>}
       </div>
       {ex.uncertainty && <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">Noaniqlik: {ex.uncertainty}</p>}
+      {ex.region && <ExerciseCrop bookId={bookId} page={regionPage} bbox={ex.region.bbox}
+        regionId={ex.region.id} detection="vision"
+        confidence={ex.region.confidence || 0} needsReview={ex.region.needs_review !== false}
+        onCorrect={onRegionChange ? (correction) => onRegionChange(correction) : undefined} />}
       <Translator seed={translationSeed} />
       {onPicturesChange && missingPictures && <div className="rounded-xl bg-indigo-50 px-4 py-3 text-xs text-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-200">
         <p className="font-semibold">Rasmlar ko'rinmayaptimi?</p>

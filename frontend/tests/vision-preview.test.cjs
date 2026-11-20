@@ -38,7 +38,10 @@ const pictureHelpers = load('src/components/reader/pdf-picture-crops.ts', { '@/l
 const mockPictures = { validPicture: pictureHelpers.validPicture, usePdfPictureCrops: (_book, questions, pages) => ({ pictures: Object.fromEntries(questions.flatMap((q, i) => pictureHelpers.validPicture(q, pages) ? [[i, 'data:image/png;base64,abc']] : [])), error: '' }) };
 const selector = { PictureSelector: ({ onSave }) => React.createElement('button', { onClick: () => onSave({ page: 1, bbox: [20, 30, 200, 300] }) }, 'Mock crop save') };
 const autoPictures = load('src/components/reader/auto-picture-locations.ts', { './pdf-picture-crops': mockPictures });
-const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator, './pdf-picture-crops': mockPictures, './picture-selector': selector, './auto-picture-locations': autoPictures });
+const cropHelpers = load('src/components/reader/exercise-crops.ts', { '@/lib/timeout': { withTimeout: (p) => p } });
+const mockCrop = { ExerciseCrop: () => null };
+const editor = { ExerciseCropEditor: () => null };
+const preview = load('src/components/reader/preview-exercise.tsx', { './translator': translator, './pdf-picture-crops': mockPictures, './picture-selector': selector, './auto-picture-locations': autoPictures, './exercise-crop': mockCrop, './exercise-crops': cropHelpers, './exercise-crop-editor': editor });
 const { VisionMapPreview } = load('src/components/reader/vision-map-preview.tsx', { './preview-exercise': preview, './pdf-picture-crops': mockPictures, './auto-picture-locations': autoPictures });
 const topic = { title: 'Articles', page_start: 1, page_end: 2, evidence_pages: [1], content_types: ['exercise'], uncertainty: '' };
 const result = { sampled_pages: [1, 2], provider: 'mock', model: 'test', warnings: [], theory: [], exercises: [

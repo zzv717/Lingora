@@ -82,6 +82,18 @@ class Settings(BaseSettings):
     ai_daily_request_limits_enabled: bool = False
     ai_daily_token_limit: int = 0  # Separate token safety cap, 0 = unlimited (per user, per day)
     vision_exercise_pages_per_day: int = 150  # applied only when daily request limits are enabled
+
+    # --- Exercise region detection (normalized 0..1 page boxes) ---
+    # Page images sent to the vision model are rendered on demand and cached by
+    # content hash, so an already analysed page never pays for a second call.
+    vision_region_dpi: int = 200            # render resolution for region detection (150-300)
+    vision_region_max_pixels: int = 2600    # longest edge sent to the provider (cost bound)
+    vision_region_workers: int = 4          # pages processed in parallel (within rate limits)
+    vision_region_cache_enabled: bool = True
+    vision_region_cache_ttl_days: int = 30  # unused entries are pruned after this
+    vision_region_verify_confidence: float = 0.7  # below this a crop is verified once
+    vision_region_debug: bool = False       # save page images with drawn boxes
+    vision_region_debug_dir: str = "./data/vision-debug"
     # Book enrichment batches (vocabulary translations, lesson notes) are network-bound;
     # run a small bounded pool so a dictionary with thousands of words does not wait
     # for one provider round trip at a time.

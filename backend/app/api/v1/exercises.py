@@ -30,6 +30,7 @@ from app.schemas import (
     AnswerSaveIn,
     CheckOut,
     ExerciseOut,
+    ExerciseRegionOut,
     OkOut,
     OptionOut,
     QuestionOut,
@@ -97,8 +98,26 @@ def _owned_exercise(db: Session, user: User, exercise_id: str, profile: Profile 
     return ex
 
 
-def _exercise_out(ex: Exercise, include_questions: bool = True) -> ExerciseOut:
+def _region_out(db: Session, ex: Exercise) -> ExerciseRegionOut | None:
+    """Attach the stored normalized crop box, if this exercise has one."""
+    from app.models import VisionExerciseRegion
+
+    region = db.scalar(select(VisionExerciseRegion).where(VisionExerciseRegion.exercise_id == ex.id))
+    if not region:
+        return None
+    return ExerciseRegionOut(
+        id=region.id, page_number=region.page_number, number=region.number, title=region.title,
+        bbox=[float(v) for v in (region.bbox or [])], source=region.source,
+        confidence=region.confidence, needs_review=region.needs_review,
+        continues_from_previous_page=region.continues_from_previous_page,
+        continues_on_next_page=region.continues_on_next_page,
+        continued_from_region_id=region.continued_from_region_id, flags=list(region.flags or []))
+
+
+def _exercise_out(ex: Exercise, include_questions: bool = True, db: Session | None = None) -> ExerciseOut:
     data = ExerciseOut.model_validate(ex)
+    if db is not None:
+        data.region = _region_out(db, ex)
     if include_questions:
         data.questions = [
             QuestionOut(
@@ -131,7 +150,7 @@ def lesson_exercises(
         select(Exercise).where(Exercise.lesson_id == lesson_id)
         .options(joinedload(Exercise.questions).joinedload(ExerciseQuestion.options))
         .order_by(Exercise.order_index)).unique().all())
-    return [_exercise_out(ex) for ex in exercises]
+    return [_exercise_out(ex, db=db) for ex in exercises]
 
 
 @router.get("/exercises/{exercise_id}", response_model=ExerciseOut)
@@ -143,7 +162,7 @@ def get_exercise(
 ):
     ex = _owned_exercise(db, user, exercise_id, profile=profile)
     db.refresh(ex)
-    return _exercise_out(ex)
+    return _exercise_out(ex, db=db)
 
 
 @router.put("/exercises/{exercise_id}/answers", response_model=OkOut)

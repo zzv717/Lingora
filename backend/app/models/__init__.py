@@ -7,6 +7,11 @@ from app.models.exercise import (
     ExerciseQuestion,
     StudentAnswer,
 )
+from app.models.vision_region import (
+    VisionExerciseRegion,
+    VisionPageRegionCache,
+    VisionRegionCorrection,
+)
 from app.models.vocab import VocabularyAttempt, VocabularyProgress, VocabularySession, VocabularyWord
 from app.models.progress import (
     ActivityDay,
@@ -25,4 +30,5 @@ __all__ = [
     "VocabularyWord", "VocabularySession", "VocabularyAttempt", "VocabularyProgress",
     "LearningProgress", "ActivityDay", "RevisionSession", "RevisionItem",
     "AIConversation", "AIMessage", "UsageEvent",
+    "VisionExerciseRegion", "VisionPageRegionCache", "VisionRegionCorrection",
 ]
