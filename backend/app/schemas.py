@@ -431,5 +431,10 @@ class VisionExercisesIn(BaseModel):
     replace: bool = False
 
 
+class VisionVocabularyIn(BaseModel):
+    """Explicit image consent: the page image leaves the server for the vision model."""
+    consent_images_to_provider: bool
+
+
 class VisionTopicPreviewIn(VisionMapPreviewIn):
     topic: str = Field(max_length=300)

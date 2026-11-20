@@ -2,10 +2,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { get, post } from "@/lib/api";
-import type { Book, Structure, VocabSession, VocabWord } from "@/lib/types";
+import type { Book, Job, Structure, VocabSession, VocabWord } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, EmptyState, Spinner, useToast } from "@/components/ui";
 import { VocabPicture } from "@/components/reader/vocab-picture";
+import { VisionVocabulary } from "@/components/reader/vision-vocabulary";
 
 export default function VocabularyPage() {
   const [books, setBooks] = useState<Book[] | null>(null);
@@ -19,6 +20,7 @@ export default function VocabularyPage() {
   const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [job, setJob] = useState<Job | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -40,6 +42,10 @@ export default function VocabularyPage() {
       setStruct(st);
       const w = await get<VocabWord[]>(`/books/${selected}/vocabulary`);
       setWords(w);
+      // Why a book is empty is usually the last job's answer: a first analysis that ran
+      // with an older detector, or a re-analysis that failed. Showing it turns a dead end
+      // into something the user can act on.
+      try { setJob(await get<Job | null>(`/books/${selected}/status`)); } catch { setJob(null); }
     })().catch(() => toast("Lug'at yuklanmadi", "error"));
   }, [selected, reloadToken, toast]);
 
@@ -84,14 +90,34 @@ export default function VocabularyPage() {
     if (!selected) return;
     setReanalyzing(true);
     try {
-      const job = await post<{ warnings?: { message_uz: string }[] }>(`/books/${selected}/reanalyze`);
-      toast(job?.warnings?.[0]?.message_uz || "Kitob qayta tahlil qilinmoqda", "success");
+      const started = await post<{ warnings?: { message_uz: string }[] }>(`/books/${selected}/reanalyze`);
+      toast(started?.warnings?.[0]?.message_uz || "Kitob qayta tahlil qilinmoqda", "success");
+      // Keep this screen live: the words appear without a reload once the job finishes.
+      setPolling((n) => n + 1);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Qayta tahlil boshlanmadi", "error");
     } finally {
       setReanalyzing(false);
     }
   };
+  // The most useful sentence is not "no vocabulary": it is WHY. A scanned book and a book
+  // with no word lists both end up empty, and only one of them is fixable by re-analysis.
+  const emptyReason = (() => {
+    const cov = struct?.coverage;
+    if (!cov) return "";
+    if (cov.pages_needing_ocr > 0) {
+      return `Kitobning ${cov.pages_needing_ocr} sahifasi skanerlangan (matn emas, rasm) — o'qish uchun OCR kerak. Kitob sahifasidagi «Skanerlangan sahifalar» bo'limidan ularni birma-bir o'qib chiqing.`;
+    }
+    if (job?.status === "failed") {
+      return `Oxirgi tahlil tugallanmadi${job.error_code ? ` (${job.error_code})` : ""}${job.error_message ? `: ${job.error_message}` : "."}`;
+    }
+    return "Tahlil tugadi, lekin bu kitobdan lug'at so'zlari ajratilmadi — kitobda alohida lug'at ro'yxatlari bo'lmasligi mumkin.";
+  })();
+  const ocrNeeded = (struct?.coverage.pages_needing_ocr ?? 0) > 0;
+  // A scanned book is re-readable only by the vision path: OCR lifts the text, but the
+  // rule-based detector still needs a "Word List" layout it can parse. Vision reads it.
+  const scannedBook = ocrNeeded;
+
   const reanalyzeAction = (
     <Button variant="secondary" loading={reanalyzing} onClick={reanalyzeBook}>
       Qayta tahlil qilish
@@ -146,7 +172,18 @@ export default function VocabularyPage() {
               <Card className="text-sm text-slate-600 dark:text-slate-300">
                 <p className="font-semibold">Bu kitobda lug'at yozuvlari topilmadi</p>
                 <p className="mt-1">Kitob matnli lug'at sahifalaridan iborat bo'lmasa, so'zlar aniqlanmaydi. Kitobni qayta tahlil qilish eski progressni saqlab qoladi, shuning uchun bemalol boshlash mumkin.</p>
-                <div className="mt-3">{reanalyzeAction}</div>
+                <p className="mt-3 rounded-lg bg-slate-100 p-2.5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                  {emptyReason}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {ocrNeeded && (
+                    <Link href={`/books/${selected}`}><Button variant="secondary">Skanerlangan sahifalarni o'qish</Button></Link>
+                  )}
+                  {!scannedBook && reanalyzeAction}
+                </div>
+                {scannedBook && selected && (
+                  <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
+                )}
               </Card>
             )}
 
@@ -234,11 +271,19 @@ export default function VocabularyPage() {
                   );
                 })}
                 {words.length === 0 && (
+                  <div className="rounded-2xl border-2 border-dashed border-slate-300 p-4 dark:border-slate-700">
                   <EmptyState
                     title="Bu kitobda lug'at topilmadi"
-                    description="Kitob lug'at ro'yxatlari bo'lmagan holda tahlil qilingan bo'lishi mumkin. Qayta tahlil kitobni yangi aniqlagich bilan o'qiydi — javoblaringiz va takrorlash jadvalingiz saqlanadi."
-                    action={reanalyzeAction}
+                    description={emptyReason || "Kitob lug'at ro'yxatlari bo'lmagan holda tahlil qilingan bo'lishi mumkin."}
+                    action={<div className="flex flex-wrap justify-center gap-2">
+                      {ocrNeeded && <Link href={`/books/${selected}`}><Button variant="secondary">Skanerlangan sahifalarni o'qish</Button></Link>}
+                      {!scannedBook && reanalyzeAction}
+                    </div>}
                   />
+                  {scannedBook && selected && (
+                    <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
+                  )}
+                  </div>
                 )}
                 {query.trim() && words.length > 0 && !words.some((w) => `${w.term} ${w.translation_uz} ${w.definition_en}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) && (
                   <EmptyState title="So'z topilmadi" description="Boshqa so'z yoki tarjima bilan qidirib ko'ring." />

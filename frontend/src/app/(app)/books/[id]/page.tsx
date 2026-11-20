@@ -2,10 +2,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { get } from "@/lib/api";
+import { get, post } from "@/lib/api";
 import type { Structure, VocabWord, Job } from "@/lib/types";
 import { TopBar } from "@/components/nav";
-import { Badge, Button, Card, Spinner } from "@/components/ui";
+import { Badge, Button, Card, Spinner, useToast } from "@/components/ui";
 import { BrowserOCR } from "@/components/reader/browser-ocr";
 import { VisionMapPreview } from "@/components/reader/vision-map-preview";
 import { VisionExercises } from "@/components/reader/vision-exercises";
@@ -34,14 +34,18 @@ export default function BookDetailPage() {
   const [error, setError] = useState("");
   const [aiWarning, setAiWarning] = useState("");
   const [words, setWords] = useState<VocabWord[]>([]);
+  const [job, setJob] = useState<Job | null>(null);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     (async () => {
       try {
         setStruct(await get<Structure>(`/books/${id}/structure`));
         try {
-          const job = await get<Job | null>(`/books/${id}/status`);
-          setAiWarning(job?.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED")?.message_uz || "");
+          const lastJob = await get<Job | null>(`/books/${id}/status`);
+          setJob(lastJob);
+          setAiWarning(lastJob?.warnings?.find((w) => w.code === "AI_ENRICHMENT_FAILED")?.message_uz || "");
         } catch { /* Structure remains usable if status is unavailable. */ }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Yuklanmadi");
@@ -84,6 +88,12 @@ export default function BookDetailPage() {
       <TopBar title={struct.book.title} />
       <main className="mx-auto max-w-5xl px-4 py-6 lg:px-8">
         {aiWarning && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{aiWarning}</p>}
+        {job?.status === "failed" && (
+          <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+            Oxirgi tahlil tugallanmadi{job.error_code ? ` (${job.error_code})` : ""}
+            {job.error_message ? `: ${job.error_message}` : "."} Eski tuzilma saqlanib qoldi.
+          </p>
+        )}
         {/* header card */}
         <Card className="mb-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -103,10 +113,23 @@ export default function BookDetailPage() {
                 {cov.pages_ocr_used > 0 && <Badge tone="slate">{cov.pages_ocr_used} sahifa OCR</Badge>}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button onClick={() => router.push(`/reader/${id}`)} size="lg">
                 {hasProgress ? "Davom ettirish →" : "O'qishni boshlash →"}
               </Button>
+              {/* Re-analysis keeps answers and the SM-2 schedule (matched by content, not
+                  ids), so it is safe to run from here at any time. */}
+              <Button variant="secondary" size="lg" loading={reanalyzing} onClick={async () => {
+                setReanalyzing(true);
+                try {
+                  const started = await post<{ warnings?: { message_uz: string }[] }>(`/books/${id}/reanalyze`);
+                  toast(started?.warnings?.[0]?.message_uz || "Kitob qayta tahlil qilinmoqda", "success");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Qayta tahlil boshlanmadi", "error");
+                } finally {
+                  setReanalyzing(false);
+                }
+              }}>Qayta tahlil</Button>
             </div>
           </div>
           {words.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-700">
