@@ -23,6 +23,10 @@ const SKIP_CODES = new Set(["NOT_A_WORD_LIST", "NO_WORDS_FOUND"]);
  * actually produces words for such a book; it never translates, never replaces a word and
  * marks everything as reviewable.
  */
+// One click scans at most this many pages: every page is a paid provider call, and a
+// 200-page scan started by a single tap would be a surprise bill, not a repair.
+const PAGES_PER_RUN = 40;
+
 export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: () => void }) {
   const [consent, setConsent] = useState(false);
   const [pending, setPending] = useState<number[] | null>(null);
@@ -50,7 +54,7 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         setError("Skanerlangan sahifa qolmagan — lug'atni boshqa yo'l bilan to'ldirish kerak.");
         return;
       }
-      for (const page of pages) {
+      for (const page of pages.slice(0, PAGES_PER_RUN)) {
         if (stopRef.current) break;
         setCurrent(page);
         try {
@@ -77,13 +81,16 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
 
   const added = results.reduce((n, r) => n + r.added, 0);
   const failed = results.filter((r) => r.status === "error");
+  // What is left AFTER this run, so the button can promise a bounded next step.
+  const remaining = Math.max(0, (pending?.length ?? 0) - results.length);
 
   return (
     <div className="mt-3 space-y-2">
       {pending && (
         <p className="text-xs text-slate-500 dark:text-slate-400">
           {pending.length
-            ? `${pending.length} sahifa skanerlangan (matn qatlamisiz). Vision AI ularni birma-bir o'qib, lug'at ro'yxatlarini ajratadi.`
+            ? `${pending.length} sahifa skanerlangan (matn qatlamisiz). Bir bosishda ko'pi bilan `
+              + `${PAGES_PER_RUN} sahifa o'qiladi — har bir sahifa AI chaqiruvi hisoblanadi.`
             : "Skanerlangan sahifa yo'q — kitob matnli, lug'at tahlildan kelishi kerak."}
         </p>
       )}
@@ -95,8 +102,9 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         </span>
       </label>
       <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" loading={busy} disabled={!consent || !pending?.length} onClick={run}>
-          {busy ? `O'qilmoqda: ${current ?? "..."} (${results.length}/${pending?.length ?? 0})` : "Lug'atni Vision bilan o'qish"}
+        <Button variant="secondary" loading={busy} disabled={!consent || !remaining} onClick={run}>
+          {busy ? `O'qilmoqda: ${current ?? "..."} (${results.length}/${Math.min(PAGES_PER_RUN, pending?.length ?? 0)})`
+            : remaining ? `Lug'atni Vision bilan o'qish (${Math.min(PAGES_PER_RUN, remaining)} sahifa)` : "Hamma sahifa o'qildi"}
         </Button>
         {busy && <Button variant="ghost" onClick={() => { stopRef.current = true; }}>To'xtatish</Button>}
       </div>
@@ -116,6 +124,7 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
           </ul>
           <p className="mt-2 text-amber-700 dark:text-amber-300">
             AI xato qilishi mumkin. So'zlarni asl sahifa bilan solishtirib tekshiring.
+            {remaining > 0 && ` Yana ${remaining} sahifa qoldi — tugmani qayta bosing.`}
           </p>
         </div>
       )}
