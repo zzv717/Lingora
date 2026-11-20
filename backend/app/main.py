@@ -31,11 +31,22 @@ async def lifespan(app: FastAPI):
     if settings.database_url.startswith("sqlite:///./data"):
         os.makedirs("./data", exist_ok=True)
 
-    # Dev convenience: create tables when Alembic hasn't run (prod uses alembic upgrade head).
-    if settings.env != "prod":
-        from app.db.session import Base, engine
-        import app.models  # noqa: F401 register tables
+    # Databases that cannot run `alembic upgrade head` (Vercel serverless, or a PaaS that
+    # ignores a start command) still need missing tables AND COLUMNS, otherwise the first
+    # query fails with "column ... does not exist". Plain create_all cannot add a column
+    # to an existing table, so those deployments use the additive upgrade instead.
+    from app.db.session import Base, engine
+    import app.models  # noqa: F401 — register tables
 
+    if os.environ.get("VERCEL") or settings.auto_schema_upgrade:
+        from app.db.schema_upgrade import ensure_schema
+
+        try:
+            ensure_schema(engine)
+        except Exception:
+            # A missing column must surface as a clear API error, not a dead cold start.
+            log.exception("Automatic schema upgrade failed")
+    elif settings.env != "prod":
         Base.metadata.create_all(engine)
 
     # A serverless cold start can coincide with a job running in another instance.

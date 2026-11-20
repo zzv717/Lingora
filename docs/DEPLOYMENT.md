@@ -130,6 +130,22 @@ chegarasi alohida amal qiladi.
 Mavjud frontend loyihasining root directory qiymati `frontend`; bu fayldan
 foydalanish uchun alohida preview sozlamasida repo ildizi kerak bo'ladi.
 
+### Sxema migratsiyasi (majburiy qadam)
+
+Yangi reliz yangi ustun qo'shsa (masalan `vocabulary_words.picture_page`), bazaga
+`alembic upgrade head` qo'llanilmasa API ishlash paytida
+`column ... does not exist` xatosi bilan yiqiladi — lug'at sahifasi aynan shunday
+500 qaytargan.
+
+- Docker / Render: `alembic upgrade head` start buyrug'ida bo'lgani uchun hech narsa
+  qilish kerak emas.
+- Vercel Services va start buyrug'i ishlamaydigan boshqa xostlar: `ENV=prod` bo'lsa ham
+  API ishga tushishda sxemani **faqat qo'shish** yo'li bilan yangilaydi
+  (`AUTO_SCHEMA_UPGRADE=true` yoki `VERCEL` muhit o'zgaruvchisi). Ustunlar qo'shilsa,
+  baza eng yangi Alembic reviziyasi bilan belgilanadi, shuning uchun keyin qo'lda
+  bajarilgan `alembic upgrade head` hech narsani qayta qo'shmaydi.
+- Migratsiyalarning o'zi ham idempotent: ustun allaqachon bo'lsa, qayta qo'shilmaydi.
+
 Alohida backend serveridan foydalanilganda Vercel
 sozlamalarida `BACKEND_URL` qiymatini FastAPI serverining HTTPS asosiy manziliga
 (masalan, `https://api.example.uz`, `/api/v1` qo'shmasdan) o'rnating va frontendni

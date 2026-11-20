@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     # "celery" -> enqueue to Celery workers (requires REDIS_URL + celery worker running)
     # "sync" -> run inside the request (serverless-compatible for short jobs only)
     task_backend: Literal["inline", "celery", "sync"] = "inline"
+    # Enable for any deployment that does not run `alembic upgrade head` on release
+    # (serverless functions, PaaS without a start command). It only ADDS what is missing.
+    auto_schema_upgrade: bool = False
     redis_url: str = ""
     pipeline_max_pages: int = 300
 
