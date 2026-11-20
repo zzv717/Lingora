@@ -42,6 +42,11 @@ from app.services.content_integrity import has_book_content
 log = logging.getLogger("lingora.books")
 router = APIRouter(prefix="/books", tags=["books"])
 
+# Pseudo-lesson id for words that belong to no lesson. It is not a database id, never has
+# progress of its own and is never written to; both the structure and the options
+# endpoint use the same name so the client can recognise it.
+UNASSIGNED_LESSON_ID = "unassigned"
+
 
 def _check_book_quota(db: Session, user: User) -> None:
     # Serialize direct-upload reservations per user on PostgreSQL.
@@ -337,7 +342,7 @@ def lesson_options(book_id: str, db: Session = Depends(get_db), user: User = Dep
     unassigned = None
     if orphans:
         unassigned = {
-            "id": "unassigned", "title": "Boshqa lug'at yozuvlari",
+            "id": UNASSIGNED_LESSON_ID, "title": "Boshqa lug'at yozuvlari",
             "topic": "", "page_start": pages[0], "page_end": pages[-1],
             "exercise_count": 0, "vocabulary_count": len(orphans),
             "has_explanation": False, "pending_ocr_pages": 0, "page_inventory_complete": True,
@@ -393,10 +398,25 @@ def book_structure(book_id: str, db: Session = Depends(get_db), user: User = Dep
         "pages_needing_ocr": int(db.query(BookPage.id).filter(BookPage.book_id == book.id,
                                                BookPage.needs_ocr.is_(True)).count()),
     }
+    # Words whose page no lesson covers (a scanned book often has NO lessons at all) must
+    # still be reachable: the Lug'at screen renders one card per lesson, so without this
+    # pseudo-lesson those words were returned by the API and silently never drawn.
+    orphans = list(db.scalars(select(VocabularyWord).where(
+        VocabularyWord.book_id == book.id, VocabularyWord.lesson_id.is_(None))
+        .order_by(VocabularyWord.page_number, VocabularyWord.term)).all())
+    lesson_rows = [LessonOut.model_validate(l) for l in lessons]
+    if orphans:
+        pages = sorted({w.page_number for w in orphans})
+        lesson_rows.append(LessonOut(
+            id=UNASSIGNED_LESSON_ID, chapter_id=None, title="Boshqa lug'at yozuvlari",
+            topic="", page_start=pages[0], page_end=pages[-1],
+            order_index=(max((l.order_index for l in lessons), default=-1) + 1),
+            grammar_explanation_uz="", summary="",
+        ))
     return BookStructureOut(
         book=BookOut.model_validate(book),
         chapters=[ChapterOut.model_validate(c) for c in chapters],
-        lessons=[LessonOut.model_validate(l) for l in lessons],
+        lessons=lesson_rows,
         lessons_progress=locks,
         coverage=coverage,
         answer_key_pages=key_pages,

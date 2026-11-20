@@ -214,7 +214,12 @@ export default function VocabularyPage() {
             ) : (
               <div className="space-y-5">
                 {struct.lessons.map((l) => {
-                  const lessonWords = words.filter((w) => w.lesson_id === l.id);
+                  // Words whose page no lesson covers (a scanned book often has no lessons
+                  // at all) carry lesson_id = null. The API groups them into a pseudo-list;
+                  // without this they were fetched and then silently never rendered.
+                  const lessonWords = l.id === "unassigned"
+                    ? words.filter((w) => !w.lesson_id)
+                    : words.filter((w) => w.lesson_id === l.id);
                   const normalizedQuery = query.trim().toLocaleLowerCase();
                   const lw = normalizedQuery
                     ? lessonWords.filter((w) => `${w.term} ${w.translation_uz} ${w.definition_en}`.toLocaleLowerCase().includes(normalizedQuery))
