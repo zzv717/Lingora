@@ -140,3 +140,42 @@ def test_pending_lists_the_scanned_pages(client, db, monkeypatch):
     body = client.get(f"{API}/books/{book}/vision-vocabulary/pending", headers=h).json()
     assert body["pages"] == [1, 2] and body["total_pages"] == 2
     assert body["consent_required"] is True
+
+
+def test_words_without_a_lesson_are_still_visible_in_the_structure(client, db, monkeypatch):
+    """A scanned book has no lessons; the Lug'at screen draws one card per lesson.
+
+    Saved words therefore used to be returned by /vocabulary and then never rendered
+    because no lesson id matched. The structure has to expose a group for them.
+    """
+    h, book, _, _ = setup_scan(client, db)
+    from app.models import Lesson, VocabularyWord
+
+    db.query(Lesson).filter(Lesson.book_id == book).delete()
+    db.add(VocabularyWord(book_id=book, term="afraid", page_number=1, source="vision",
+                          needs_translation=True, definition_en="When someone is afraid."))
+    db.add(VocabularyWord(book_id=book, term="agree", page_number=1, source="vision",
+                          needs_translation=True, definition_en="To agree is to say yes."))
+    db.commit()
+
+    structure = client.get(f"{API}/books/{book}/structure", headers=h).json()
+    ids = [lesson["id"] for lesson in structure["lessons"]]
+    assert "unassigned" in ids
+    group = next(lesson for lesson in structure["lessons"] if lesson["id"] == "unassigned")
+    assert group["title"] == "Boshqa lug'at yozuvlari"
+    # LessonOut carries the page span; the words themselves come from /vocabulary.
+    assert group["page_start"] == 1 and group["page_end"] == 1
+
+    words = client.get(f"{API}/books/{book}/vocabulary", headers=h).json()
+    shown = [w for w in words if not w["lesson_id"]]
+    assert {w["term"] for w in shown} == {"afraid", "agree"}
+    assert words[0]["lesson_id"] is None  # nothing was invented for the DB row
+
+
+def test_a_book_without_orphans_gets_no_pseudo_lesson(client, db, monkeypatch):
+    h, book, lesson, _ = setup_scan(client, db)
+    db.add(VocabularyWord(book_id=book, lesson_id=lesson, term="agree", page_number=1,
+                          needs_translation=True))
+    db.commit()
+    structure = client.get(f"{API}/books/{book}/structure", headers=h).json()
+    assert "unassigned" not in [l["id"] for l in structure["lessons"]]
