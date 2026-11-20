@@ -528,10 +528,88 @@ CREATE TABLE IF NOT EXISTS ai_messages (
 CREATE INDEX IF NOT EXISTS ix_ai_messages_conv ON ai_messages (conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_ai_messages_conversation_id ON ai_messages (conversation_id);
 
+
+-- ------------------------------------------------------------------
+-- Exercise crop regions (normalized 0..1 boxes), page cache and correction log
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vision_exercise_regions (
+	exercise_id VARCHAR(36),
+	book_id VARCHAR(36) NOT NULL,
+	page_number INTEGER NOT NULL,
+	order_index INTEGER NOT NULL,
+	number VARCHAR(16) NOT NULL,
+	title VARCHAR(300) NOT NULL,
+	bbox JSON NOT NULL,
+	original_bbox JSON,
+	source VARCHAR(16) NOT NULL,
+	confidence DOUBLE PRECISION NOT NULL,
+	needs_review BOOLEAN NOT NULL,
+	continues_from_previous_page BOOLEAN NOT NULL,
+	continues_on_next_page BOOLEAN NOT NULL,
+	continued_from_region_id VARCHAR(36),
+	flags JSON NOT NULL,
+	model VARCHAR(120) NOT NULL,
+	provider VARCHAR(40) NOT NULL,
+	image_sha256 VARCHAR(64) NOT NULL,
+	id VARCHAR(36) NOT NULL,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE,
+	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS ix_vision_exercise_regions_book_id ON vision_exercise_regions (book_id);
+CREATE INDEX IF NOT EXISTS ix_vision_exercise_regions_exercise_id ON vision_exercise_regions (exercise_id);
+CREATE INDEX IF NOT EXISTS ix_vision_regions_book_page ON vision_exercise_regions (book_id, page_number);
+CREATE INDEX IF NOT EXISTS ix_vision_regions_book_order ON vision_exercise_regions (book_id, page_number, order_index);
+
+CREATE TABLE IF NOT EXISTS vision_page_region_cache (
+	cache_key VARCHAR(128) NOT NULL UNIQUE,
+	book_id VARCHAR(36) NOT NULL,
+	page_number INTEGER NOT NULL,
+	image_sha256 VARCHAR(64) NOT NULL,
+	provider VARCHAR(40) NOT NULL,
+	model VARCHAR(120) NOT NULL,
+	payload TEXT NOT NULL,
+	hits INTEGER NOT NULL,
+	id VARCHAR(36) NOT NULL,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_vision_page_region_cache_book_id ON vision_page_region_cache (book_id);
+CREATE INDEX IF NOT EXISTS ix_vision_cache_book_page ON vision_page_region_cache (book_id, page_number);
+
+CREATE TABLE IF NOT EXISTS vision_region_corrections (
+	user_id VARCHAR(36) NOT NULL,
+	book_id VARCHAR(36) NOT NULL,
+	region_id VARCHAR(36),
+	exercise_id VARCHAR(36),
+	page_number INTEGER NOT NULL,
+	number VARCHAR(16) NOT NULL,
+	previous_source VARCHAR(16) NOT NULL,
+	previous_bbox JSON NOT NULL,
+	corrected_bbox JSON NOT NULL,
+	note VARCHAR(300) NOT NULL,
+	id VARCHAR(36) NOT NULL,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE,
+	FOREIGN KEY(book_id) REFERENCES books (id) ON DELETE CASCADE,
+	FOREIGN KEY(region_id) REFERENCES vision_exercise_regions (id) ON DELETE SET NULL,
+	FOREIGN KEY(exercise_id) REFERENCES exercises (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS ix_vision_region_corrections_book_id ON vision_region_corrections (book_id);
+CREATE INDEX IF NOT EXISTS ix_vision_region_corrections_user_id ON vision_region_corrections (user_id);
+CREATE INDEX IF NOT EXISTS ix_vision_corrections_book_page ON vision_region_corrections (book_id, page_number);
+CREATE INDEX IF NOT EXISTS ix_vision_corrections_user ON vision_region_corrections (user_id, created_at);
+
 -- ============================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
 -- ============================================================
--- All 27 tables have RLS enabled.
+-- All 30 tables have RLS enabled.
 -- Direct user_id tables check `user_id = lingora_current_user_id()`.
 -- Linked content tables check ownership via EXISTS JOIN to books or parent tables.
 -- ============================================================
@@ -563,6 +641,9 @@ ALTER TABLE revision_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vision_exercise_regions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vision_page_region_cache ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vision_region_corrections ENABLE ROW LEVEL SECURITY;
 
 -- 1. users
 DROP POLICY IF EXISTS "users_owner_all" ON users;
@@ -735,4 +816,21 @@ CREATE POLICY "ai_messages_owner_all" ON ai_messages
 -- 27. usage_events (direct user_id)
 DROP POLICY IF EXISTS "usage_events_owner_all" ON usage_events;
 CREATE POLICY "usage_events_owner_all" ON usage_events
+  FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());
+
+-- 28. vision_exercise_regions (via books.user_id)
+DROP POLICY IF EXISTS "vision_exercise_regions_owner_all" ON vision_exercise_regions;
+CREATE POLICY "vision_exercise_regions_owner_all" ON vision_exercise_regions
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = vision_exercise_regions.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = vision_exercise_regions.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 29. vision_page_region_cache (via books.user_id)
+DROP POLICY IF EXISTS "vision_page_region_cache_owner_all" ON vision_page_region_cache;
+CREATE POLICY "vision_page_region_cache_owner_all" ON vision_page_region_cache
+  FOR ALL USING (EXISTS (SELECT 1 FROM books b WHERE b.id = vision_page_region_cache.book_id AND b.user_id = lingora_current_user_id()))
+  WITH CHECK (EXISTS (SELECT 1 FROM books b WHERE b.id = vision_page_region_cache.book_id AND b.user_id = lingora_current_user_id()));
+
+-- 30. vision_region_corrections (direct user_id)
+DROP POLICY IF EXISTS "vision_region_corrections_owner_all" ON vision_region_corrections;
+CREATE POLICY "vision_region_corrections_owner_all" ON vision_region_corrections
   FOR ALL USING (user_id = lingora_current_user_id()) WITH CHECK (user_id = lingora_current_user_id());

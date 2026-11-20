@@ -115,6 +115,23 @@ export interface Question {
   options: Option[];
 }
 
+export interface ExerciseRegion {
+  id: string;
+  page_number: number;
+  number: string;
+  title: string;
+  /** Normalized [x1, y1, x2, y2] in 0..1 of the rendered page (not pixels). */
+  bbox: [number, number, number, number];
+  /** "ai" = model proposal, "manual" = corrected by the user (always wins). */
+  source: "ai" | "manual" | string;
+  confidence: number;
+  needs_review: boolean;
+  continues_from_previous_page: boolean;
+  continues_on_next_page: boolean;
+  continued_from_region_id: string | null;
+  flags: string[];
+}
+
 export interface Exercise {
   id: string;
   book_id: string;
@@ -125,6 +142,8 @@ export interface Exercise {
   ref: string;
   page_number: number;
   bbox: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** Stored crop box for this exercise, in normalized page coordinates. */
+  region?: ExerciseRegion | null;
   topic: string;
   explanation_uz: string;
   order_index: number;

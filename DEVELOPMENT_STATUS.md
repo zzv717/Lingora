@@ -56,6 +56,33 @@ See `docs/AI_TUTOR_VISION_AUDIT.md`. A bounded consent-based Vision mapping and
 topic preview has been added, not a full mapping-first pipeline or tutor. Real
 AI/provider acceptance and durable, persistent topic analysis are not complete.
 
+## Exercise crop accuracy (normalized regions)
+
+- Exercise locations are stored as normalized (0..1) boxes in `vision_exercise_regions`
+  and converted to pixels only when a crop is rendered, so DPI/zoom no longer shifts a crop.
+- One vision call per page (strict JSON schema when supported) with a prompt that keeps inner
+  items `1) a)` inside the exercise, respects columns and ignores page furniture; one repair
+  retry on gaps/duplicates; low-confidence boxes get a crop verification pass.
+- Detection is cached by page image hash (`vision_page_region_cache`) and can run 1-8 pages in
+  parallel; already processed pages are never paid for twice.
+- `Tuzatish` in the reader/preview and the `Mashq qirqimlari` panel save a manual box that wins
+  over the AI result, and every correction is logged in `vision_region_corrections`.
+- `python -m scripts.verify_exercise_regions --book <id> --pages 1-10 --debug` prints per
+  exercise number/bbox/confidence plus a failure table and debug renders.
+- Backend: 175 tests pass. Docs: `docs/EXERCISE_CROPS.md` (old flow, causes, limitations).
+
+## Vision topic preview validation follow-up
+
+- `vision-topic/preview` now tolerates harmless model output variations (extra
+  fields, numeric labels, alternative exercise-type wording, missing optional
+  arrays) instead of returning `AI_BAD_OUTPUT` and losing the whole result.
+- Evidence pages outside the consented selection are removed with an explicit
+  warning; unsupported picture crops are still dropped. Truly empty/unparseable
+  responses still fail closed after one repair retry, with the validation reason
+  in the error details.
+- Backend: 158 tests passed locally. This is still a temporary browser-local
+  preview, not server-persisted topic analysis or a verified answer key.
+
 ## Book upload/analysis speed follow-up
 
 - Direct-upload finalization now hands the already-downloaded PDF bytes to the

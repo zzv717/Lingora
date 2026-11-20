@@ -45,7 +45,7 @@ class AIProvider(ABC):
     @abstractmethod
     def complete(self, messages: list[ChatMessage], model: str | None = None,
                  max_tokens: int = 3000, temperature: float = 0.2,
-                 json_mode: bool = False) -> AIResponse: ...
+                 json_mode: bool = False, json_schema: dict[str, Any] | None = None) -> AIResponse: ...
 
 
 _REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
@@ -65,7 +65,25 @@ class OpenAICompatibleProvider(AIProvider):
         self.base_url = (settings.ai_base_url or "https://api.openai.com/v1").rstrip("/")
         self.headers = {"Authorization": f"Bearer {settings.ai_api_key}", "Content-Type": "application/json"}
 
-    def complete(self, messages, model=None, max_tokens=3000, temperature=0.2, json_mode=False):
+    @staticmethod
+    def _schema_payload(schema: dict[str, Any]) -> dict[str, Any]:
+        """Strict `response_format` for a hard JSON schema (OpenAI structured outputs)."""
+        return {"type": "json_schema",
+                "json_schema": {"name": schema.get("title") or "response", "schema": schema, "strict": True}}
+
+    def complete(self, messages, model=None, max_tokens=3000, temperature=0.2, json_mode=False,
+                 json_schema=None):
+        try:
+            return self._complete(messages, model, max_tokens, temperature, json_mode, json_schema)
+        except ApiError as exc:
+            # Many OpenAI-compatible servers only support {"type":"json_object"}.
+            # Retry once with plain JSON mode so a schema request never breaks a working provider.
+            if json_schema and exc.code == "AI_PROVIDER_REJECTED":
+                log.warning("Provider rejected the JSON schema; retrying with plain JSON mode")
+                return self._complete(messages, model, max_tokens, temperature, True, None)
+            raise
+
+    def _complete(self, messages, model, max_tokens, temperature, json_mode, json_schema):
         payload_msgs: list[dict] = []
         for m in messages:
             if m.images:
@@ -88,7 +106,9 @@ class OpenAICompatibleProvider(AIProvider):
             payload["max_tokens"] = max_tokens
         if not _is_reasoning_model(mdl):
             payload["temperature"] = temperature  # reasoning models only accept the default value
-        if json_mode:
+        if json_schema:
+            payload["response_format"] = self._schema_payload(json_schema)
+        elif json_mode:
             payload["response_format"] = {"type": "json_object"}
         return self._send(f"{self.base_url}/chat/completions", payload)
 

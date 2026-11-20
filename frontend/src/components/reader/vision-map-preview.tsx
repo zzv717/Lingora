@@ -225,6 +225,17 @@ function TopicSample({ bookId, pageCount, topic, active, busy, setBusy }: { book
       }}>Bu mavzuning mahalliy ma'lumotlarini o'chirish</Button>
       {result.exercises.map((ex, i) => <PreviewExercise key={`${revision}-${i}`} bookId={bookId} ex={ex} pages={result.sampled_pages} answers={answers[i] || []}
         active={active} externalBusy={busy}
+        onRegionChange={(correction) => {
+          // The backend already stored the manual box (it wins over the AI box);
+          // keep the saved preview in sync so a reload shows the corrected crop.
+          const current = latest.current;
+          if (!current.result || current.storageKey !== storageKey) return;
+          const next = { ...current.result, exercises: current.result.exercises.map((item, j) => j === i
+            ? { ...item, region: { ...(item.region || { id: correction.regionId, confidence: 1 }), id: correction.regionId, bbox: correction.bbox, needs_review: false } }
+            : item) };
+          latest.current = { ...current, result: next };
+          setResult(next); saveLocally(next, current.answers);
+        }}
         onPicturesChange={(updates) => {
           const current = latest.current;
           if (!current.result || current.storageKey !== storageKey || current.result.exercises[i] !== ex) return;

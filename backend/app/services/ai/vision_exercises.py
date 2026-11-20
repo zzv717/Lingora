@@ -82,13 +82,17 @@ Rules:
 - If an exercise depends on a picture to be answerable, set "depends_on_picture": true and still list the
   numbered items you can read (prompt may be short, e.g. "One balloon + four ......").
 - "number" is the exercise number printed in the marker, as a string. Unknown -> "".
+- "bbox" is the exercise's rectangle on THIS page image, normalized 0..1 ([x1,y1,x2,y2],
+  top-left origin). It must start at the heading and end after the last item, stay inside one
+  column on two-column pages, and include inner items 1) 2) a) b). Null when unsure.
 - For multiple choice put each option as printed in "options" (e.g. "A) went"). For matching exercises use
   "matching": {"left": [...], "right": [...]} and leave "questions" empty.
 - "blank_count" = number of gaps in that item (0 if none).
 - Return ONLY JSON, no markdown, exactly this shape:
 {"page_kind":"exercises|theory|mixed|other","transcript":"","exercises":[{"number":"","instruction":"",
 "type":"fill_blank|multiple_choice|matching|translation|sentence_construction|writing|reading_comprehension|true_false",
-"example":"","passage":"","depends_on_picture":false,"continues_from_previous_page":false,
+"example":"","passage":"","title":"","bbox":[0.08,0.1,0.92,0.45],"confidence":0.9,
+"depends_on_picture":false,"continues_from_previous_page":false,
 "continues_on_next_page":false,"matching":{"left":[],"right":[]},
 "questions":[{"number":"","prompt":"","options":[],"blank_count":0}]}],"warnings":[]}
 - "transcript": the printed text of the page in reading order, without describing pictures (max ~2500 characters).
@@ -119,6 +123,10 @@ class VExercise:
     continues_from_previous_page: bool = False
     continues_on_next_page: bool = False
     questions: list[VQuestion] = field(default_factory=list)
+    # Normalized 0..1 page box: how the exercise is cropped from the page image.
+    bbox: list[float] | None = None
+    confidence: float = 0.0
+    title: str = ""
 
 
 @dataclass
@@ -188,6 +196,22 @@ def normalize_type(raw: Any, has_options: bool, has_matching: bool, has_blanks: 
     return "writing"
 
 
+def _region_bbox(value: Any) -> list[float] | None:
+    """Accept 0..1 or 0..1000 boxes; keep only a usable normalized rectangle."""
+    from app.services.ai.vision_regions import clamp_bbox, valid_bbox
+
+    if not valid_bbox(value):
+        return None
+    return clamp_bbox(value)
+
+
+def _confidence(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def normalize_page(raw: Any) -> VPage:
     """Validate and clean the model output. Raises ValueError when it is structurally unusable."""
     if not isinstance(raw, dict):
@@ -233,7 +257,9 @@ def normalize_page(raw: Any) -> VPage:
             example=_s(ex.get("example"), 600), passage=_s(ex.get("passage"), 6000),
             depends_on_picture=_bool(ex.get("depends_on_picture")),
             continues_from_previous_page=_bool(ex.get("continues_from_previous_page")),
-            continues_on_next_page=_bool(ex.get("continues_on_next_page")), questions=questions))
+            continues_on_next_page=_bool(ex.get("continues_on_next_page")), questions=questions,
+            bbox=_region_bbox(ex.get("bbox")), confidence=_confidence(ex.get("confidence")),
+            title=_s(ex.get("title"), 300)))
     warnings = [_s(w, 300) for w in (raw.get("warnings") or []) if isinstance(w, str)][:10]
     return VPage(page_kind=_s(raw.get("page_kind"), 20) or "other", transcript=_s(raw.get("transcript"), 6000),
                  exercises=exercises, warnings=warnings)
@@ -242,6 +268,7 @@ def normalize_page(raw: Any) -> VPage:
 def page_as_preview(page: VPage) -> list[dict[str, Any]]:
     return [{
         "number": ex.number, "instruction": ex.instruction, "type": ex.exercise_type, "example": ex.example,
+        "title": ex.title, "bbox": ex.bbox, "confidence": ex.confidence,
         "depends_on_picture": ex.depends_on_picture,
         "continues_from_previous_page": ex.continues_from_previous_page,
         "continues_on_next_page": ex.continues_on_next_page,
@@ -390,5 +417,25 @@ def save_page(db: Session, book, book_page, page: VPage, replace: bool = False) 
         book_page.needs_ocr = False
         book_page.ocr_used = True
         book_page.has_warning = True
+    _store_regions(db, book, book_page, page)
     db.commit()
     return {"exercises_added": added, "exercises_found": len(page.exercises)}
+
+
+def _store_regions(db: Session, book, book_page, page: VPage) -> None:
+    """Save normalized boxes (never pixels) so crops stay valid at any DPI.
+
+    Only vision exercises get regions; a manual box already saved for the page is kept
+    as-is by the store (it always takes priority over the AI result).
+    """
+    from app.services.ai.vision_region_store import save_page_regions
+
+    regions = [{"number": ex.number, "title": ex.title or ex.instruction[:120],
+                "bbox": ex.bbox, "confidence": ex.confidence or 0.5,
+                "continues_from_previous_page": ex.continues_from_previous_page,
+                "continues_on_next_page": ex.continues_on_next_page, "source": "ai", "flags": []}
+               for ex in page.exercises if ex.bbox]
+    if not regions:
+        return
+    save_page_regions(db, book, book_page.page_number, regions,
+                      model=(settings.ai_vision_model or settings.ai_model))

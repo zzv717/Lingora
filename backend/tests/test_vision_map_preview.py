@@ -138,12 +138,44 @@ def test_topic_preview_keeps_group_and_sends_only_selected_pages(client, db, mon
     assert db.scalar(select(UsageEvent)).feature == 'vision_topic_preview'
 
 
-def test_topic_rejects_out_of_scope_sources(client, db, monkeypatch):
+def test_topic_drops_out_of_scope_sources_and_warns(client, db, monkeypatch):
+    """A bad page citation must not discard the whole unverified preview."""
     h, book, _, _ = setup_scan(client, db)
     provider = setup(monkeypatch, [topic_output(evidence=3)])
     monkeypatch.setattr('app.services.ai.vision_topic.get_provider', lambda: provider)
     res = client.post(f'/api/v1/books/{book}/vision-topic/preview', headers=h,
                       json={'page_numbers': [1, 2], 'topic': '', 'consent_images_to_provider': True})
-    assert res.status_code == 502 and res.json()['error']['code'] == 'AI_BAD_OUTPUT'
-    assert len(provider.calls) == 2
-    assert db.scalar(select(func.count()).select_from(UsageEvent)) == 2
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(provider.calls) == 1
+    assert all(q['evidence_pages'] == [] for q in body['exercises'][0]['questions'])
+    assert any('manba havolalari olib tashlandi' in w for w in body['warnings'])
+    assert db.scalar(select(func.count()).select_from(Exercise)) == 0
+
+
+def test_topic_accepts_minor_schema_deviations(client, db, monkeypatch):
+    """Extra fields and string/number shapes must not cause AI_BAD_OUTPUT."""
+    h, book, _, _ = setup_scan(client, db)
+    output = {
+        'topic': 'Present Forms', 'model_notes': 'partial',
+        'theory': [{'text': 'Theory', 'evidence_pages': ['1'], 'confidence': 0.5}],
+        'exercises': [{'number': 9, 'instruction': 'Complete.', 'exercise_type': 'fill in the blank',
+                       'context': '', 'depends_on_picture': 'false', 'evidence_pages': '2',
+                       'questions': [{'number': 1, 'prompt': 'She ___ to school.',
+                                      'options': ['goes', {'letter': 'B', 'text': 'go'}],
+                                      'evidence_pages': ['2'], 'note': 'untrusted'}],
+                       'uncertainty': None}],
+    }
+    provider = setup(monkeypatch, [json.dumps(output)])
+    monkeypatch.setattr('app.services.ai.vision_topic.get_provider', lambda: provider)
+    res = client.post(f'/api/v1/books/{book}/vision-topic/preview', headers=h,
+                      json={'page_numbers': [1, 2], 'topic': '', 'consent_images_to_provider': True})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    ex = body['exercises'][0]
+    assert ex['number'] == '9' and ex['exercise_type'] == 'cloze'
+    assert ex['evidence_pages'] == [2]
+    q = ex['questions'][0]
+    assert q['number'] == '1' and q['options'] == ['goes', 'go'] and q['evidence_pages'] == [2]
+    assert 'model_notes' not in body and 'note' not in q
+    assert len(provider.calls) == 1

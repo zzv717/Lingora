@@ -183,6 +183,23 @@ class QuestionOut(BaseModel):
     # NOTE: correct_answers are never exposed to students before checking.
 
 
+class ExerciseRegionOut(BaseModel):
+    """Normalized exercise location (0..1). Independent of page render size/DPI."""
+
+    id: str
+    page_number: int
+    number: str = ""
+    title: str = ""
+    bbox: list[float]
+    source: str  # ai | manual
+    confidence: float = 0.0
+    needs_review: bool = True
+    continues_from_previous_page: bool = False
+    continues_on_next_page: bool = False
+    continued_from_region_id: Optional[str] = None
+    flags: list[Any] = []
+
+
 class ExerciseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -200,6 +217,8 @@ class ExerciseOut(BaseModel):
     detection: str
     needs_review: bool
     questions: list[QuestionOut] = []
+    # Cropped from the original PDF using this normalized box (None = no crop available).
+    region: Optional[ExerciseRegionOut] = None
 
 
 class AnswerSaveIn(BaseModel):

@@ -12,11 +12,12 @@ import { get, post } from "@/lib/api";
 import { trustedBlank, chooseLesson } from "@/lib/reader-utils";
 import { validPlan } from "@/lib/lesson-plan";
 import { withTimeout } from "@/lib/timeout";
-import type { Exercise, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
+import type { Exercise, ExerciseRegion, Lesson, Structure, VocabSession, Verdict } from "@/lib/types";
 import { Button, Card, Spinner, useToast } from "@/components/ui";
 import { PdfViewer, type BlankOverlay } from "@/components/reader/pdf-viewer";
 import { ExerciseCard, type FbValues } from "@/components/reader/exercise-card";
 import { OcrReview } from "@/components/reader/ocr-review";
+import { ExerciseCrop } from "@/components/reader/exercise-crop";
 
 function ReaderInner() {
   const { bookId } = useParams<{ bookId: string }>();
@@ -121,6 +122,12 @@ function ReaderInner() {
 
   const onFbChange = useCallback((qid: string, blankId: string, value: string) => {
     setFbValues((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), [blankId]: value } }));
+  }, []);
+
+  // A corrected crop box replaces the stored one immediately (server already saved it).
+  const onRegionCorrected = useCallback((exerciseId: string, region: ExerciseRegion) => {
+    setExercises((current) => current ? current.map((item) => item.id === exerciseId
+      ? { ...item, region } : item) : current);
   }, []);
 
   const onChecked = useCallback((verdicts: Verdict[]) => {
@@ -253,8 +260,19 @@ function ReaderInner() {
                   </Card>
                 )}
                 {exercises.map((ex) => (
-                  <ExerciseCard key={ex.id} exercise={ex}
-                    fbValues={filterFb(fbValues, ex)} onFbChange={onFbChange} onChecked={onChecked} />
+                  <div key={ex.id}>
+                    {ex.region && (
+                      <ExerciseCrop bookId={bookId} page={ex.region.page_number || ex.page_number}
+                        bbox={ex.region.bbox} regionId={ex.region.id} detection={ex.detection}
+                        confidence={ex.region.confidence} needsReview={ex.region.needs_review}
+                        onCorrect={(correction) => onRegionCorrected(ex.id, {
+                          ...ex.region!, id: correction.regionId, bbox: correction.bbox,
+                          source: "manual", needs_review: false,
+                        })} />
+                    )}
+                    <ExerciseCard exercise={ex}
+                      fbValues={filterFb(fbValues, ex)} onFbChange={onFbChange} onChecked={onChecked} />
+                  </div>
                 ))}
               </>
             )}
