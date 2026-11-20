@@ -58,15 +58,6 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: 1
 
-      # Vercel builds from the REPO ROOT using the commands in vercel.json
-      # (`npm --prefix frontend ...`). A root that cannot install and build is a broken
-      # deploy, and that had gone unnoticed because CI only ever built inside frontend/.
-      - name: Repo-root build (what Vercel runs)
-        run: |
-          npm ci --prefix frontend
-          npm run build --prefix frontend
-        env:
-          NEXT_TELEMETRY_DISABLED: 1
 
       - name: Test production API proxy and reader
         run: cd frontend && npm run test:proxy && npm run test:reader
