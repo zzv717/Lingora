@@ -29,6 +29,10 @@ const PAGES_PER_RUN = 40;
 
 export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: () => void }) {
   const [consent, setConsent] = useState(false);
+  // Off by default: a scanned book needs only its scanned pages. A book WITH a text layer
+  // that still produced no words is the other case — re-analysis re-reads the same layout
+  // and changes nothing, so vision has to look at every page instead.
+  const [allPages, setAllPages] = useState(false);
   const [pending, setPending] = useState<number[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [current, setCurrent] = useState<number | null>(null);
@@ -38,17 +42,18 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
 
   useEffect(() => {
     let alive = true;
-    get<{ pages: number[] }>(`/books/${bookId}/vision-vocabulary/pending`)
+    get<{ pages: number[] }>(`/books/${bookId}/vision-vocabulary/pending?include_text_pages=${allPages}`)
       .then((r) => { if (alive) setPending(r.pages); })
       .catch(() => { if (alive) setPending(null); });
     return () => { alive = false; };
-  }, [bookId]);
+  }, [bookId, allPages]);
 
   async function run() {
     if (!consent || busy) return;
     setBusy(true); setError(""); setResults([]); stopRef.current = false;
     try {
-      const { pages } = await get<{ pages: number[] }>(`/books/${bookId}/vision-vocabulary/pending`);
+      const { pages } = await get<{ pages: number[] }>(
+        `/books/${bookId}/vision-vocabulary/pending?include_text_pages=${allPages}`);
       setPending(pages);
       if (!pages.length) {
         setError("Skanerlangan sahifa qolmagan — lug'atni boshqa yo'l bilan to'ldirish kerak.");
@@ -94,6 +99,13 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
             : "Skanerlangan sahifa yo'q — kitob matnli, lug'at tahlildan kelishi kerak."}
         </p>
       )}
+      <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
+        <input type="checkbox" checked={allPages} disabled={busy} onChange={(e) => setAllPages(e.target.checked)} />
+        <span>
+          Matnli sahifalarni ham tekshirish — kitobda matn bor, lekin lug'at baribir
+          topilmagan bo'lsa (qayta tahlil ham o'zgarish bermasa) shu variantni tanlang.
+        </span>
+      </label>
       <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
         <input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
         <span>
