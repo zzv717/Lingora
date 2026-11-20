@@ -104,31 +104,63 @@ bucket va backendda `STORAGE_BACKEND`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
 `SUPABASE_STORAGE_BUCKET` sozlamalarini ulang. Free service ishlab chiqarishdagi
 fayl va background joblar uchun mosligi alohida baholanishi kerak.
 
-### Vercel frontend
+### Vercel frontend (Cloudflare'siz)
 
-Hozirgi Vercel sozlamasi faqat Next.js frontendni ishga tushiradi; FastAPI
-backendni alohida ishga tushirish va unga doimiy PostgreSQL bazasini ulash kerak.
-Vercel Services ham frontend va FastAPI xizmatini bitta loyihada ishlata oladi.
-Repo ildizidagi `vercel.json` Vercel Services uchun. Supabase private bucket
-bilan frontend imzolangan TUS orqali PDF'ni bevosita Storage'ga yuklaydi;
-Vercel Function 4.5 MB request chegarasi faylga qo'llanmaydi. Backend uchun
-`SUPABASE_PUBLISHABLE_KEY` ga faqat publishable/anon kalit qo'ying — service
-kalit hech qachon browserga yuborilmaydi. `SUPABASE_DIRECT_UPLOAD_ENABLED=true`
-qilishdan oldin private bucket hajm chegarasini aniq 52428800 bayt (50 MiB)
-qiling; Storage global chegarasi ham kamida shuncha bo'lsin. Backend har
-bir token berishdan oldin private bucket va limitni tekshiradi;
-Free rejada bitta fayl maksimumi 50 MB. Backend haqiqiy hajm va PDF ni tekshiradi.
-Yuklash to'xtasa rezerv kitob joy egallaydi, muddati 2 soat; muddati o'tgandan
-keyin keyingi yuklashda tozalanadi. Imzolangan ruxsatni bekor qilib bo'lmagani
-uchun yangi yuklangan kitob/hisobni o'chirishdan oldin 2 soat kutish kerak.
+Vercel **faqat frontendni** xizmat qiladi: Next.js sahifalari va `/backend/*`
+proxy route'i. FastAPI backend Render'da turadi (`render.yaml`), shuning uchun
+serverless funksiya ichida background ish qilish muammosi umuman paydo bo'lmaydi.
 
-Muhim: ushbu usul ishlashini haqiqiy Supabase/Vercel Preview'da sinash zarur.
-`TASK_BACKEND=sync` faqat qisqa tahlillarni so'rov ichida bajaradi; u serverless
-vaqt chegarasi yoki jarayon to'xtashidan himoyalangan navbat emas. Katta PDF'ni
-ishonchli tahlil qilish uchun alohida durable worker va recovery zarur. 300 sahifa
-chegarasi alohida amal qiladi.
-Mavjud frontend loyihasining root directory qiymati `frontend`; bu fayldan
-foydalanish uchun alohida preview sozlamasida repo ildizi kerak bo'ladi.
+**Cloudflare Workers ishlatilmaydi.** Ilgari `lingora` worker'i production'ni
+egallab olgan va `main`dan ajralgan eski branch'dan (`arena/c54ee9f4-lingora`,
+2026-11-13) qurilib qolgan edi: har bir build yiqilardi, sayt esa eski kodda
+qotib qolardi. Cloudflare'dagi servis o'chirilgach, Vercel yagona manzil bo'lib qoladi.
+
+Sozlamalar (Vercel → Project → Settings):
+
+| Sozlama | Qiymat |
+|---|---|
+| Root Directory | **bo'sh** (repo ildizi) |
+| Framework Preset | Next.js |
+| Production Branch | `main` |
+| Env: `BACKEND_URL` | Vercel Services binding beradi; alohida backend bo'lsa `https://<render-xizmat>.onrender.com` (`/api/v1` qo'shmasdan) |
+| Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | faqat to'g'ridan-to'g'ri yuklash (TUS) ishlatilsa |
+
+Ildizdagi `vercel.json` **Vercel Services** tavsifidir: `frontend` (Next.js) va
+`backend` (FastAPI) xizmatlari bitta loyihada, `frontend` esa `BACKEND_URL`
+binding'ini avtomatik oladi. Uni oddiy root-build sozlamalari bilan
+almashtirmang — sinab ko'rildi va preview deploy darhol yiqildi: loyiha aynan
+shu tavsif orqali xizmat qiladi.
+
+`BACKEND_URL` Next.js ishga tushganda o'qiladi (build vaqtida emas), shuning
+uchun Render manzili o'zgarsa faqat env o'zgaruvchini yangilash kifoya —
+frontendni qayta build qilish shart emas.
+
+**Deploy chiqqanini tekshirish.** `GET /api/v1/health` endi qaysi commit'dan
+qurilganini qaytaradi:
+
+```json
+{"status": "ok", "app": "Lingora API", "env": "prod", "revision": "14509e2"}
+```
+
+Frontend orqali: `https://<domain>/backend/api/v1/health`. `revision` `main`dagi
+oxirgi commit bilan bir xil bo'lishi kerak. `BACKEND_UNAVAILABLE` qaytsa —
+`BACKEND_URL` noto'g'ri yoki Render xizmati uxlab yotgan (bepul rejada birinchi
+so'rov sekin).
+
+**Storage.** Render'ning diski deploy'da o'chib ketadi, shuning uchun yuklangan
+PDF'lar yo'qoladi. Ikki yo'l: Render'ga persistent disk ulash
+(`STORAGE_DIR` ni disk yo'liga qo'ying), yoki private Supabase bucket:
+`STORAGE_BACKEND=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
+`SUPABASE_STORAGE_BUCKET`. Service kalit **faqat serverda** turadi.
+`SUPABASE_DIRECT_UPLOAD_ENABLED=true` qilishdan oldin bucket hajmini aniq
+52428800 bayt (50 MiB) qiling; Vercel Function'ning 4.5 MB request chegarasi
+faylga qo'llanmaydi, chunki yuklash imzolangan TUS bilan bevosita Storage'ga
+ketadi. Yuklash to'xtasa rezerv kitob joy egallaydi, muddati 2 soat.
+
+**Analysis.** `TASK_BACKEND=inline` (default) Render'ning uzoq yashovchi
+jarayonida ThreadPool'da ishlaydi va 60–200 soniyalik skanerlashni oxirigacha
+yetkazadi. `TASK_BACKEND=sync` serverless uchun, lekin request timeout'iga
+tushib qoladi — bu loyihada ishlatilmaydi.
 
 ### Sxema migratsiyasi (majburiy qadam)
 
