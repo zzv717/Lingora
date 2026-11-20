@@ -29,7 +29,10 @@
 - A separate `vision-topic/preview` lets the user select one candidate and 1–5
   pages for theory and exercise candidates, retaining shared context and
   questions, including possible cross-page context within the selected images.
-  It displays empty results and model uncertainty, not fabricated success. Both
+  It displays empty results and model uncertainty, not fabricated success.
+  Minor response-shape deviations (extra keys, string numbers, unknown exercise
+  labels) are normalized, and page citations outside the selected sample are
+  dropped with visible warnings instead of discarding the whole preview. Both
   calls can incur provider fees and record usage; errors do not create book data.
   Page images are sent only following per-action consent. Provider errors, PDF
   loading, rendering, invalid model responses and missing configuration surface

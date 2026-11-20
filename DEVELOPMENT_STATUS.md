@@ -56,6 +56,18 @@ See `docs/AI_TUTOR_VISION_AUDIT.md`. A bounded consent-based Vision mapping and
 topic preview has been added, not a full mapping-first pipeline or tutor. Real
 AI/provider acceptance and durable, persistent topic analysis are not complete.
 
+## Vision topic preview validation follow-up
+
+- `vision-topic/preview` now tolerates harmless model output variations (extra
+  fields, numeric labels, alternative exercise-type wording, missing optional
+  arrays) instead of returning `AI_BAD_OUTPUT` and losing the whole result.
+- Evidence pages outside the consented selection are removed with an explicit
+  warning; unsupported picture crops are still dropped. Truly empty/unparseable
+  responses still fail closed after one repair retry, with the validation reason
+  in the error details.
+- Backend: 158 tests passed locally. This is still a temporary browser-local
+  preview, not server-persisted topic analysis or a verified answer key.
+
 ## Book upload/analysis speed follow-up
 
 - Direct-upload finalization now hands the already-downloaded PDF bytes to the
