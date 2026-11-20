@@ -83,6 +83,9 @@ class Pipeline:
             self.job.error_message = getattr(e, "message_uz", "") or str(e)
             self.job.finished_at = datetime.now(timezone.utc)
             book.status = "ready" if has_book_content(self.db, book.id) else "failed"
+            if self.job.job_type == "reanalyze":
+                from app.services import reanalyze
+                reanalyze.finish(self.db, book.id)
             self.db.commit()
 
     def _run(self, book: Book) -> None:
@@ -137,10 +140,16 @@ class Pipeline:
                 seen_warn.add(k)
                 deduped_warn.append(w)
 
-        # Never replace active content until versioned staging and answer migration exist.
         # Lock and check again at the write boundary, including duplicate workers.
         self.db.scalar(select(Book).where(Book.id == book.id).with_for_update())
-        if has_book_content(self.db, book.id):
+        # A re-analysis snapshots the student's progress and clears the old structure in
+        # THIS session, moments before writing the new one, so nothing is lost if the run
+        # fails: an uncommitted delete simply rolls back and the old book stays intact.
+        if self.job.job_type == "reanalyze":
+            from app.services import reanalyze
+            preserved = reanalyze.begin_reanalysis(self.db, book.id)
+            self.db.info[f"reanalyze:{book.id}"] = preserved
+        elif has_book_content(self.db, book.id):
             raise ApiError("REANALYZE_UNSAFE", "Mavjud kitob ma'lumotlarini saqlash uchun qayta tahlil to'xtatildi.", 409)
 
         for p in pages:
@@ -255,6 +264,29 @@ class Pipeline:
             self.db.add(AnswerKey(book_id=book.id, page_number=ak["page"], source="book", verified=False))
 
         self.db.commit()
+
+        # ---- put the student's progress back onto the new structure ----
+        if self.job.job_type == "reanalyze":
+            from app.services import reanalyze
+            try:
+                stats = reanalyze.restore(self.db, book.id)
+                self.db.commit()
+                reanalyze.finish(self.db, book.id)
+                deduped_warn.append({
+                    "page": 0, "code": "REANALYZE_KEPT",
+                    "message_uz": (f"Qayta tahlil tugadi. Saqlab qolindi: "
+                                   f"{stats.get('lessons', 0)} dars progressi, "
+                                   f"{stats.get('words', 0)} so'z takrorlash holati, "
+                                   f"{stats.get('exercise_attempts', 0)} mashq natijasi."),
+                })
+            except Exception:
+                self.db.rollback()
+                log.exception("Restoring progress after re-analysis failed")
+                deduped_warn.append({
+                    "page": 0, "code": "REANALYZE_PROGRESS_LOST",
+                    "message_uz": ("Qayta tahlil tugadi, lekin eski progressni tiklab bo'lmadi. "
+                                   "Kitob mazmuni yangi; natijalar qaytadan yig'iladi."),
+                })
 
         # ---- AI enrichment (optional, honest degradation) ----
         self.progress(80, "ai_enrich")

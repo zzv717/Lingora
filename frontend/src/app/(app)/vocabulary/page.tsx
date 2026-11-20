@@ -17,6 +17,8 @@ export default function VocabularyPage() {
   const [starting, setStarting] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -39,7 +41,7 @@ export default function VocabularyPage() {
       const w = await get<VocabWord[]>(`/books/${selected}/vocabulary`);
       setWords(w);
     })().catch(() => toast("Lug'at yuklanmadi", "error"));
-  }, [selected, toast]);
+  }, [selected, reloadToken, toast]);
 
   // A book that is still being analysed is not a dead end: keep the screen informative
   // and refresh until it becomes ready instead of showing "no vocabulary".
@@ -55,8 +57,12 @@ export default function VocabularyPage() {
       setBooks(list);
       const ready = list.find((x) => x.status === "ready");
       if (ready) setSelected((current) => current || ready.id);
+      // The selected book just finished a re-analysis: its words and lessons are new.
+      if (selected && list.some((x) => x.id === selected && x.status === "ready")) {
+        setReloadToken((n) => n + 1);
+      }
     }).catch(() => {});
-  }, [polling]);
+  }, [polling, selected]);
 
   const startReview = async (lessonId?: string) => {
     setStarting(true);
@@ -70,6 +76,27 @@ export default function VocabularyPage() {
       setStarting(false);
     }
   };
+
+  // A book whose vocabulary stayed empty was analysed by an older detector. Re-analysis
+  // keeps answers and SM-2 schedules (matched by content, not ids), so it is safe to
+  // offer here instead of leaving the user with an empty screen and no way forward.
+  const reanalyzeBook = async () => {
+    if (!selected) return;
+    setReanalyzing(true);
+    try {
+      const job = await post<{ warnings?: { message_uz: string }[] }>(`/books/${selected}/reanalyze`);
+      toast(job?.warnings?.[0]?.message_uz || "Kitob qayta tahlil qilinmoqda", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Qayta tahlil boshlanmadi", "error");
+    } finally {
+      setReanalyzing(false);
+    }
+  };
+  const reanalyzeAction = (
+    <Button variant="secondary" loading={reanalyzing} onClick={reanalyzeBook}>
+      Qayta tahlil qilish
+    </Button>
+  );
 
   const readyBooks = (books || []).filter((b) => b.status === "ready");
 
@@ -118,7 +145,8 @@ export default function VocabularyPage() {
             {readyBooks.length > 0 && !words.length && struct && (
               <Card className="text-sm text-slate-600 dark:text-slate-300">
                 <p className="font-semibold">Bu kitobda lug'at yozuvlari topilmadi</p>
-                <p className="mt-1">Kitob matnli lug'at sahifalaridan iborat bo'lmasa, so'zlar aniqlanmaydi. Kitob sahifasidagi «Kitob tahlili» bo'limidan Vision AI bilan tekshirib ko'rish mumkin.</p>
+                <p className="mt-1">Kitob matnli lug'at sahifalaridan iborat bo'lmasa, so'zlar aniqlanmaydi. Kitobni qayta tahlil qilish eski progressni saqlab qoladi, shuning uchun bemalol boshlash mumkin.</p>
+                <div className="mt-3">{reanalyzeAction}</div>
               </Card>
             )}
 
@@ -208,7 +236,8 @@ export default function VocabularyPage() {
                 {words.length === 0 && (
                   <EmptyState
                     title="Bu kitobda lug'at topilmadi"
-                    description="Kitobda lug'at ro'yxatlari bo'lmasa yoki AI tarjima sozlanmagan bo'lsa, so'zlar ko'rinmaydi."
+                    description="Kitob lug'at ro'yxatlari bo'lmagan holda tahlil qilingan bo'lishi mumkin. Qayta tahlil kitobni yangi aniqlagich bilan o'qiydi — javoblaringiz va takrorlash jadvalingiz saqlanadi."
+                    action={reanalyzeAction}
                   />
                 )}
                 {query.trim() && words.length > 0 && !words.some((w) => `${w.term} ${w.translation_uz} ${w.definition_en}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) && (

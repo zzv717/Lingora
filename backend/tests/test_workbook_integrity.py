@@ -3,7 +3,8 @@ import fitz
 import pytest
 from sqlalchemy import select
 
-from app.models import Book, BookPage, Exercise, ExerciseQuestion, LearningProgress, StudentAnswer
+from app.models import (Book, BookPage, Exercise, ExerciseQuestion, LearningProgress, StudentAnswer,
+                        VocabularyWord)
 from app.services.grading import grade_question_deterministic
 from app.services.pdf_extractor import extract_document
 from app.services.structure_detector import detect_structure
@@ -55,7 +56,13 @@ def test_instruction_without_exercise_heading():
     doc.close()
 
 
-def test_reanalysis_guard_preserves_answer_and_progress(client, db):
+def test_reanalysis_keeps_answers_and_progress(client, db):
+    """Re-analysis re-reads the book without destroying what the user already did.
+
+    Progress is snapshotted by content (lesson page range, word spelling, exercise ref)
+    before the old structure is replaced and matched back afterwards, so a book analysed
+    before a detector improvement can be re-read without losing the student's history.
+    """
     headers = auth_headers(make_user(client, 'integrity@example.com')['access_token'])
     book = upload(client, headers, make_sample_book()).json()['id']
     assert wait_for_book(client, headers, book)['status'] == 'completed'
@@ -67,11 +74,23 @@ def test_reanalysis_guard_preserves_answer_and_progress(client, db):
                       json={'answers': [{'question_id': qid, 'content': {'blanks': {'b1': 'goes'}}}]}).status_code == 200
     assert client.post('/api/v1/progress/heartbeat', headers=headers,
                        json={'seconds': 0, 'lesson_id': lesson, 'page': 2}).status_code == 200
-    assert client.post(f'/api/v1/books/{book}/reanalyze', headers=headers).status_code == 409
+    word = client.get(f'/api/v1/books/{book}/vocabulary', headers=headers).json()[0]
+
+    response = client.post(f'/api/v1/books/{book}/reanalyze', headers=headers)
+    assert response.status_code == 200, response.text
+    job = wait_for_book(client, headers, book)
+    assert job['status'] == 'completed', job
+    assert any(w['code'] in ('REANALYZE_STARTED', 'REANALYZE_KEPT') for w in job['warnings'])
+
     db.expire_all()
-    assert db.get(ExerciseQuestion, qid) is not None
-    assert db.scalar(select(StudentAnswer).where(StudentAnswer.question_id == qid)).content['blanks']['b1'] == 'goes'
-    assert db.scalar(select(LearningProgress).where(LearningProgress.lesson_id == lesson)).last_page == 2
+    # The structure is new (new ids), but the student's history came back with it.
+    new_structure = client.get(f'/api/v1/books/{book}/structure', headers=headers).json()
+    new_lesson = new_structure['lessons'][0]['id']
+    progress = db.scalar(select(LearningProgress).where(LearningProgress.lesson_id == new_lesson))
+    assert progress is not None and progress.last_page == 2
+    new_words = client.get(f'/api/v1/books/{book}/vocabulary', headers=headers).json()
+    assert {w['term'] for w in new_words} >= {word['term']}
+    assert db.scalar(select(VocabularyWord.id).where(VocabularyWord.book_id == book)) is not None
     assert db.get(Book, book).status == 'ready'
 
 

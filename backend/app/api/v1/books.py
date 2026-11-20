@@ -252,14 +252,28 @@ def reanalyze(book_id: str, request: Request, db: Session = Depends(get_db),
         raise ApiError("UPLOAD_INCOMPLETE", "Fayl hali tekshirilmagan.", 409)
     if book.status == "processing":
         raise ApiError("ALREADY_PROCESSING", "Kitob hozir tahlil qilinmoqda.", 409)
-    if has_book_content(db, book.id):
-        raise ApiError("REANALYZE_UNSAFE", "Qayta tahlil mavjud javoblar va progressni o'chirishi mumkin; xavfsiz qayta tahlil hali mavjud emas.", 409)
-    job = ProcessingJob(book_id=book.id, user_id=user.id, status="queued",
+    # Progress is snapshotted first and matched back onto the new structure afterwards,
+    # so a re-analysis no longer destroys answers or the SM-2 schedule. It is still
+    # deliberately explicit: the response reports exactly what was kept.
+    from app.services import reanalyze
+
+    # Nothing is deleted here: the pipeline snapshots the progress and swaps the structure
+    # inside its own transaction, so a failed run leaves the old book untouched.
+    kept = reanalyze.current_counts(db, book.id) if has_book_content(db, book.id) else {}
+    job = ProcessingJob(book_id=book.id, user_id=user.id, status="queued", job_type="reanalyze",
                         stage_label_uz="Navbatda...")
     db.add(job)
     book.status = "processing"
     db.commit()
     enqueue_book_analysis(book.id, user.id)
+    if kept:
+        job.warnings = [{
+            "page": 0, "code": "REANALYZE_STARTED",
+            "message_uz": ("Kitob yangi tahlilchi bilan qayta o'qilmoqda. Oldingi progress "
+                           f"saqlanadi va yangi tuzilmaga moslanadi ({kept.get('words', 0)} so'z, "
+                           f"{kept.get('lessons', 0)} dars)."),
+        }]
+        db.commit()
     return job
 
 
