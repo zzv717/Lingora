@@ -6,6 +6,7 @@ import type { Book, Job, Structure, VocabSession, VocabWord } from "@/lib/types"
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, EmptyState, Spinner, useToast } from "@/components/ui";
 import { VocabPicture } from "@/components/reader/vocab-picture";
+import { VisionVocabulary } from "@/components/reader/vision-vocabulary";
 
 export default function VocabularyPage() {
   const [books, setBooks] = useState<Book[] | null>(null);
@@ -113,6 +114,9 @@ export default function VocabularyPage() {
     return "Tahlil tugadi, lekin bu kitobdan lug'at so'zlari ajratilmadi — kitobda alohida lug'at ro'yxatlari bo'lmasligi mumkin.";
   })();
   const ocrNeeded = (struct?.coverage.pages_needing_ocr ?? 0) > 0;
+  // A scanned book is re-readable only by the vision path: OCR lifts the text, but the
+  // rule-based detector still needs a "Word List" layout it can parse. Vision reads it.
+  const scannedBook = ocrNeeded;
 
   const reanalyzeAction = (
     <Button variant="secondary" loading={reanalyzing} onClick={reanalyzeBook}>
@@ -175,8 +179,11 @@ export default function VocabularyPage() {
                   {ocrNeeded && (
                     <Link href={`/books/${selected}`}><Button variant="secondary">Skanerlangan sahifalarni o'qish</Button></Link>
                   )}
-                  {reanalyzeAction}
+                  {!scannedBook && reanalyzeAction}
                 </div>
+                {scannedBook && selected && (
+                  <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
+                )}
               </Card>
             )}
 
@@ -264,14 +271,19 @@ export default function VocabularyPage() {
                   );
                 })}
                 {words.length === 0 && (
+                  <div className="rounded-2xl border-2 border-dashed border-slate-300 p-4 dark:border-slate-700">
                   <EmptyState
                     title="Bu kitobda lug'at topilmadi"
                     description={emptyReason || "Kitob lug'at ro'yxatlari bo'lmagan holda tahlil qilingan bo'lishi mumkin."}
                     action={<div className="flex flex-wrap justify-center gap-2">
                       {ocrNeeded && <Link href={`/books/${selected}`}><Button variant="secondary">Skanerlangan sahifalarni o'qish</Button></Link>}
-                      {reanalyzeAction}
+                      {!scannedBook && reanalyzeAction}
                     </div>}
                   />
+                  {scannedBook && selected && (
+                    <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
+                  )}
+                  </div>
                 )}
                 {query.trim() && words.length > 0 && !words.some((w) => `${w.term} ${w.translation_uz} ${w.definition_en}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) && (
                   <EmptyState title="So'z topilmadi" description="Boshqa so'z yoki tarjima bilan qidirib ko'ring." />

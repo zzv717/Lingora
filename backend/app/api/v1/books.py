@@ -32,7 +32,7 @@ from app.models import (
     User,
     VocabularyWord,
 )
-from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionMapPreviewIn, VisionTopicPreviewIn
+from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionVocabularyIn, VisionMapPreviewIn, VisionTopicPreviewIn
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
@@ -557,6 +557,76 @@ def save_vision_exercises(book_id: str, page_number: int, data: VisionExercisesI
     saved = save_page(db, book, page, result, replace=data.replace)
     return {"page_number": page_number, "provider": provider, "model": model, "page_kind": result.page_kind,
             "warnings": result.warnings, "exercises": page_as_preview(result), "saved": True, **saved}
+
+
+def _vocabulary_page(db: Session, book, page_number: int, data: VisionVocabularyIn) -> BookPage:
+    """Shared checks for the vision-vocabulary endpoints."""
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book.id, BookPage.page_number == page_number))
+    if not page:
+        raise ApiError("PAGE_NOT_FOUND", "Sahifa topilmadi.", 404)
+    return page
+
+
+@router.get("/{book_id}/vision-vocabulary/pending")
+def vision_vocabulary_pending(book_id: str, db: Session = Depends(get_db),
+                              user: User = Depends(get_current_user)):
+    """Scanned pages of a book, i.e. the pages whose word lists only vision can read.
+
+    A book with no vocabulary at all is scanned end to end, so this list is also the
+    worklist for "make my Lug'at appear" on a photocopied book.
+    """
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    from app.services.ai.vision_vocabulary import pending_pages
+
+    pages = pending_pages(db, book)
+    return {"pages": pages, "total_pages": book.page_count,
+            "consent_required": True}
+
+
+@router.post("/{book_id}/vision-vocabulary/pages/{page_number}/preview")
+def preview_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabularyIn, request: Request,
+                              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Run the vision model on one page and return the words it read. Saves nothing."""
+    limit(request, "vision_vocabulary", 300, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    _vocabulary_page(db, book, page_number, data)
+    from app.services.ai.vision_vocabulary import analyse_page, words_as_preview
+
+    result, provider, model = analyse_page(db, user.id, book, page_number)
+    return {"page_number": page_number, "provider": provider, "model": model,
+            "is_word_list": result.is_word_list, "heading": result.heading,
+            "words": words_as_preview(result), "warnings": result.warnings, "saved": False}
+
+
+@router.post("/{book_id}/vision-vocabulary/pages/{page_number}")
+def save_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabularyIn, request: Request,
+                           db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Read one page with the vision model and append its words (needs_review, untranslated)."""
+    limit(request, "vision_vocabulary", 300, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    # Serialize with other imports for the same book on PostgreSQL.
+    db.scalar(select(Book).where(Book.id == book.id).with_for_update())
+    _vocabulary_page(db, book, page_number, data)
+    from app.services.ai.vision_vocabulary import analyse_page, save_words, words_as_preview
+
+    result, provider, model = analyse_page(db, user.id, book, page_number)
+    if not result.is_word_list:
+        # Nothing is written when the page is not a word list: an empty Lug'at stays honest.
+        raise ApiError("NOT_A_WORD_LIST",
+                       "Bu sahifada lug'at ro'yxati topilmadi; hech narsa saqlanmadi. "
+                       "Sahifa mashq yoki matn bo'lishi mumkin.", 422)
+    saved = save_words(db, book, page_number, result)
+    if saved["words_found"] == 0:
+        raise ApiError("NO_WORDS_FOUND", "Sahifadan so'z ajratilmadi; hech narsa saqlanmadi.", 422)
+    return {"page_number": page_number, "provider": provider, "model": model,
+            "heading": result.heading, "warnings": result.warnings,
+            "words": words_as_preview(result), "saved": True, **saved}
 
 
 @router.get("/{book_id}/ocr/pending")
