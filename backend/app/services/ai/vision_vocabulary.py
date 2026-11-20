@@ -263,8 +263,20 @@ def save_words(db: Session, book, page_number: int, result: VWordList) -> dict[s
     return {"words_added": added, "words_found": len(result.words)}
 
 
-def pending_pages(db: Session, book) -> list[int]:
-    """Scanned pages of a book that still needs a word list, in page order."""
+def pending_pages(db: Session, book, include_text_pages: bool = False) -> list[int]:
+    """Pages that still need a word list, in page order.
+
+    Scanned pages come first because they are the ones the rule detector can never read.
+    ``include_text_pages`` widens the worklist to every page: a book can have a text layer
+    and still be laid out so that the rule detector finds no word list at all (the case
+    where "re-analysis changed nothing" — it re-read the same unreadable layout), and then
+    vision is the only path that produces words.
+    """
+    from app.models import VocabularyWord
+
     pages = db.scalars(select(BookPage).where(BookPage.book_id == book.id)
                        .order_by(BookPage.page_number)).all()
-    return [p.page_number for p in pages if p.needs_ocr]
+    with_words = set(db.scalars(select(VocabularyWord.page_number)
+                                 .where(VocabularyWord.book_id == book.id)).all())
+    return [p.page_number for p in pages
+            if p.needs_ocr or (include_text_pages and p.page_number not in with_words)]

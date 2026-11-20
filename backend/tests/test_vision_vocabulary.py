@@ -179,3 +179,25 @@ def test_a_book_without_orphans_gets_no_pseudo_lesson(client, db, monkeypatch):
     db.commit()
     structure = client.get(f"{API}/books/{book}/structure", headers=h).json()
     assert "unassigned" not in [l["id"] for l in structure["lessons"]]
+
+
+def test_text_pages_can_be_included_when_rules_found_nothing(client, db, monkeypatch):
+    """A book can have a text layer and still yield no words; re-analysis then changes nothing."""
+    h, book, _, _ = setup_scan(client, db)
+    from app.models import BookPage, VocabularyWord
+
+    # Both pages carry text now: the rule detector ran and found no word list.
+    for page in db.scalars(select(BookPage).where(BookPage.book_id == book)).all():
+        page.needs_ocr = False
+        page.text = "Word List afraid ..."
+    db.add(VocabularyWord(book_id=book, term="agree", page_number=2, needs_translation=True))
+    db.commit()
+
+    setup(monkeypatch, [])
+    scanned_only = client.get(f"{API}/books/{book}/vision-vocabulary/pending", headers=h).json()
+    assert scanned_only["pages"] == []          # nothing scanned, so nothing is offered
+
+    widened = client.get(f"{API}/books/{book}/vision-vocabulary/pending?include_text_pages=true",
+                         headers=h).json()
+    # Page 2 already has a word, so only page 1 still needs reading.
+    assert widened["pages"] == [1] and widened["include_text_pages"] is True

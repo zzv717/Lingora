@@ -592,7 +592,8 @@ def _vocabulary_page(db: Session, book, page_number: int, data: VisionVocabulary
 
 
 @router.get("/{book_id}/vision-vocabulary/pending")
-def vision_vocabulary_pending(book_id: str, db: Session = Depends(get_db),
+def vision_vocabulary_pending(book_id: str, include_text_pages: bool = False,
+                              db: Session = Depends(get_db),
                               user: User = Depends(get_current_user)):
     """Scanned pages of a book, i.e. the pages whose word lists only vision can read.
 
@@ -604,8 +605,9 @@ def vision_vocabulary_pending(book_id: str, db: Session = Depends(get_db),
         raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
     from app.services.ai.vision_vocabulary import pending_pages
 
-    pages = pending_pages(db, book)
+    pages = pending_pages(db, book, include_text_pages=include_text_pages)
     return {"pages": pages, "total_pages": book.page_count,
+            "include_text_pages": include_text_pages,
             "consent_required": True}
 
 
