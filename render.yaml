@@ -22,3 +22,22 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      # --- Background analysis ---
+      # The API process is long-lived on Render, so the inline worker (default) runs
+      # the full 60-200 s book pipeline reliably. It MUST NOT be "sync": a synchronous
+      # analysis is cut off by the request timeout and leaves books stuck at "processing".
+      - key: TASK_BACKEND
+        value: inline
+      # --- Storage (private pdf files) ---
+      # Render's disk is wiped on every deploy/restart, which loses uploaded pdfs and
+      # breaks every reader view. Either attach a persistent disk (see docs/DEPLOYMENT.md)
+      # or use the private Supabase bucket: STORAGE_BACKEND=supabase + keys, entered
+      # privately in the Render dashboard.
+      - key: STORAGE_BACKEND
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
