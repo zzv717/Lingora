@@ -259,8 +259,12 @@ def translate_word(book_id: str, word_id: str, db: Session = Depends(get_db),
     db.commit()
     db.refresh(word)
     if not word.translation_uz:
+        # The provider is configured here (we just called it), so never say "AI sozlanmagan":
+        # report what actually went wrong.
+        detail = (stats.get("error_uz") or "").strip()
         raise ApiError("TRANSLATION_FAILED",
-                       "Tarjima yaratilmadi (AI sozlanmagan yoki javob bermadi).", 503)
+                       f"Tarjima yaratilmadi: {detail}" if detail
+                       else "Tarjima yaratilmadi: AI bo'sh javob qaytardi.", 502)
     return _entry_out(word)
 
 
@@ -276,8 +280,11 @@ def translate_missing(book_id: str, limit: int = Query(default=100, ge=1, le=300
         return {"requested": 0, "translated": 0, "remaining": 0}
     stats = vocab_translate.translate_words(db, user.id, pending)
     remaining = len(vocab_translate.missing_translations(db, book_id, limit=5000))
+    # "error_uz" is the provider's own explanation ("Gemini xatosi (400): API key not valid"),
+    # which is what the user needs; a bare code would make them guess.
     return {"requested": stats["requested"], "translated": stats["translated"],
-            "remaining": remaining, "error": stats.get("error", "")}
+            "remaining": remaining, "provider": stats.get("provider", ""),
+            "error": stats.get("error", ""), "error_uz": stats.get("error_uz", "")}
 
 
 @router.delete("/books/{book_id}/vocabulary/{word_id}", response_model=OkOut)

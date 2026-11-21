@@ -9,7 +9,7 @@
     "lint": "next lint",
     "postinstall": "node scripts/copy-workers.cjs",
     "test:proxy": "node tests/proxy.test.mjs",
-    "test:reader": "node tests/reader.test.mjs && node tests/lesson-plan.test.mjs && node tests/vision-preview.test.cjs && node tests/lesson-vision.test.cjs && node tests/exercise-crops.test.mjs && node tests/vocab-picture.test.cjs && node tests/settings-logout.test.cjs"
+    "test:reader": "node tests/reader.test.mjs && node tests/lesson-plan.test.mjs && node tests/vision-preview.test.cjs && node tests/lesson-vision.test.cjs && node tests/exercise-crops.test.mjs && node tests/vocab-picture.test.cjs && node tests/vocabulary-auto-badge.test.cjs && node tests/settings-logout.test.cjs"
   },
   "dependencies": {
     "@tesseract.js-data/eng": "^1.0.0",

@@ -28,9 +28,12 @@ def word_list_output(*terms):
             "example": f"» The {term} woman was afraid of what she saw.",
             "bbox": [0.1, 0.1 + i * 0.08, 0.9, 0.17 + i * 0.08],
             "confidence": 0.9,
+            # Reading order is part of the strict schema: every key is required, so a fixture
+            # that omits it is not a valid model answer any more.
+            "order_in_page": i + 1,
         })
-    return json.dumps({"is_word_list": True, "unit": "Unit 1", "heading": "Word List",
-                       "entries": words, "warnings": []})
+    return json.dumps({"is_word_list": True, "unit": "Unit 1", "unit_title": "People",
+                       "heading": "Word List", "entries": words, "warnings": []})
 
 
 def setup(monkeypatch, responses):
@@ -75,7 +78,8 @@ def test_normalisation_drops_duplicates_and_junk():
 
 def test_a_page_without_a_word_list_is_not_saved(client, db, monkeypatch):
     h, book, _, _ = setup_scan(client, db)
-    setup(monkeypatch, [json.dumps({"is_word_list": False, "entries": []})])
+    setup(monkeypatch, [json.dumps({"is_word_list": False, "unit": "", "unit_title": "",
+                                    "entries": [], "warnings": []})])
     r = client.post(url(book, 1), headers=h, json={"consent_images_to_provider": True})
     assert r.status_code == 422 and r.json()["error"]["code"] == "NOT_A_WORD_LIST"
     db.expire_all()
@@ -227,7 +231,8 @@ def test_batch_reads_pages_and_reports_per_page(client, db, monkeypatch):
 def test_a_page_that_is_not_a_word_list_is_marked_scanned_and_not_offered_again(client, db, monkeypatch):
     """Re-reading a non-list page costs a paid call and cannot change the answer."""
     h, book, _, _ = setup_scan(client, db)
-    setup(monkeypatch, [json.dumps({"is_word_list": False, "entries": []})])
+    setup(monkeypatch, [json.dumps({"is_word_list": False, "unit": "", "unit_title": "",
+                                    "entries": [], "warnings": []})])
     r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
                     json={"consent_images_to_provider": True, "pages": [1]})
     assert r.json()["results"][0]["status"] == "not_a_word_list"

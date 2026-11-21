@@ -40,6 +40,10 @@ log = logging.getLogger("lingora.vocab_extract")
 # Statuses that belong to a human: replacing the extraction must not delete them.
 PROTECTED_STATUSES = ("verified", "edited")
 
+# Failures that are a property of the configuration, not of one page: stop the run and report.
+REPEATING_FAILURES = ("AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED", "AI_PROVIDER_REJECTED",
+                      "AI_QUOTA_EXCEEDED", "AI_FEATURE_QUOTA_EXCEEDED", "AI_TOKEN_QUOTA_EXCEEDED")
+
 # Connection-level failures a retry on a fresh connection can fix (server closed an idle
 # pooled connection, pooler recycled it, TLS dropped). A bad statement is not in this list.
 _TRANSIENT_DB_MARKERS = ("server closed the connection", "connection was closed",
@@ -147,7 +151,8 @@ def extract_book(db: Session, book: Book,
     """
     report: dict[str, Any] = {"units": 0, "pages_read": 0, "words_added": 0,
                               "rejected": 0, "deferred": 0, "duplicates": 0,
-                              "translated": 0, "unit_list": [], "warnings": [], "per_page": [],
+                              "translated": 0, "translation_error": "", "unit_list": [],
+                              "warnings": [], "per_page": [],
                               "cleared": {"words_removed": 0, "units_removed": 0}}
     if not settings.ai_vision_configured:
         report["warnings"].append({"page": 0, "code": "AI_VISION_NOT_CONFIGURED",
@@ -219,7 +224,10 @@ def extract_book(db: Session, book: Book,
             report["warnings"].append({
                 "page": page_number, "code": "VOCABULARY_PAGE_FAILED",
                 "message_uz": f"{page_number}-sahifani AI o'qiy olmadi."})
-            if exc.http_status in (401, 402, 403):
+            # Problems that will repeat identically on every remaining page: an invalid key,
+            # an unknown model, a spent quota. Continuing would pay for the same failure
+            # hundreds of times (and, on a bad base URL, wait out a timeout each time).
+            if exc.http_status in (401, 402, 403) or exc.code in REPEATING_FAILURES:
                 report["deferred"] = len(targets) - index
                 break
             continue
@@ -275,9 +283,13 @@ def extract_book(db: Session, book: Book,
             if not round_stats.get("translated") or round_stats.get("error"):
                 break
         if stats.get("error"):
+            # The provider's own message, not a generic sentence: "AI sozlanmagan yoki javob
+            # bermadi" was shown even when the AI was configured and had returned an error.
             report["warnings"].append({
                 "page": 0, "code": f"VOCABULARY_TRANSLATION_{stats['error']}",
-                "message_uz": "Ba'zi so'zlar tarjima qilinmadi; ular «tarjimasiz» deb belgilandi."})
+                "message_uz": (stats.get("error_uz")
+                               or f"Tarjima bajarilmadi ({stats['error']}); so'zlar «tarjimasiz» qoldi.")})
+            report["translation_error"] = stats.get("error_uz", "")
     if progress_cb:
         progress_cb(1.0, "vocabulary")
 

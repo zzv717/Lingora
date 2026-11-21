@@ -733,6 +733,7 @@ def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, req
             "cleared": cleared,
             "elapsed_seconds": round(time.monotonic() - started, 1),
             "results": report["per_page"],
+            "translation_error": report.get("translation_error", ""),
             "stamp_retried": report.get("stamp_retried", False),
             "warnings": report["warnings"]}
 
@@ -769,7 +770,8 @@ def translate_book_vocabulary(book_id: str, request: Request,
     stats = vocab_translate.translate_words(db, user.id, pending)
     remaining = len(vocab_translate.missing_translations(db, book.id, limit=5000))
     return {"requested": stats["requested"], "translated": stats["translated"],
-            "remaining": remaining, "error": stats.get("error", "")}
+            "remaining": remaining, "provider": stats.get("provider", ""),
+            "error": stats.get("error", ""), "error_uz": stats.get("error_uz", "")}
 
 
 @router.get("/{book_id}/vision-vocabulary/pending")

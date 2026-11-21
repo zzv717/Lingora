@@ -30,7 +30,7 @@ from app.core.config import settings
 from app.core.errors import ApiError
 from app.models import VocabularyWord
 from app.services.ai import usage
-from app.services.ai.provider import ChatMessage, extract_json, get_provider
+from app.services.ai.provider import ChatMessage, get_provider, parse_json_schema_content
 
 log = logging.getLogger("lingora.vocab_translate")
 
@@ -111,18 +111,20 @@ def clean_translation(raw: Any) -> str:
 
 def translate_words(db: Session, user_id: str, words: list[VocabularyWord],
                     batch_size: int = BATCH_SIZE) -> dict[str, Any]:
-    """Translate a list of entries in batches. Returns counts, never raises for one batch.
+    """Translate a list of entries in batches. Returns counts and the *reason* of any failure.
 
     Idempotent by construction: the caller passes words that still need a translation, and a
     word that already has one (in any status) is skipped here as well, so a retry after a
     partial failure costs nothing for the words already done.
+
+    Nothing is swallowed. A failure carries ``error`` (a code) and ``error_uz`` (the provider's
+    own words, e.g. "Gemini xatosi (400): API key not valid"), because "AI sozlanmagan yoki
+    javob bermadi" was shown even when the AI *was* configured and had answered with an error.
     """
-    pending = [w for w in words if not (w.translation_uz or "").strip()
-               or (w.translation_status or "") not in HUMAN_STATUSES]
-    # Only words with no translation at all are sent; a human-owned one is never overwritten.
-    pending = [w for w in pending if not (w.translation_uz or "").strip()]
+    pending = [w for w in words if not (w.translation_uz or "").strip()]
     stats: dict[str, Any] = {"requested": len(words), "translated": 0, "batches": 0,
-                             "failed_batches": 0, "skipped": len(words) - len(pending)}
+                             "failed_batches": 0, "skipped": len(words) - len(pending),
+                             "error": "", "error_uz": "", "provider": ""}
     if not pending:
         return stats
     try:
@@ -130,10 +132,13 @@ def translate_words(db: Session, user_id: str, words: list[VocabularyWord],
     except ApiError as exc:
         log.info("vocabulary translation skipped: %s", exc.code)
         stats["error"] = exc.code
+        stats["error_uz"] = exc.message_uz
         return stats
+    stats["provider"] = provider.name
     model = (settings.ai_model or "").strip() or (settings.ai_vision_model or "").strip()
     if not model:
         stats["error"] = "AI_NOT_CONFIGURED"
+        stats["error_uz"] = "AI modeli sozlanmagan (AI_MODEL yoki AI_VISION_MODEL)."
         return stats
 
     for start in range(0, len(pending), batch_size):
@@ -142,18 +147,23 @@ def translate_words(db: Session, user_id: str, words: list[VocabularyWord],
         try:
             stats["translated"] += _translate_batch(db, user_id, provider, model, batch)
         except ApiError as exc:
-            # A quota/configuration problem will repeat on every batch: stop, keep what is done.
+            # A quota/configuration problem will repeat on every batch: stop, keep what is done,
+            # and report the provider's own message instead of a generic sentence.
             log.warning("vocabulary translation batch failed (%s): %s", exc.code, exc.message_uz)
             stats["failed_batches"] += 1
             stats["error"] = exc.code
+            stats["error_uz"] = exc.message_uz
             if exc.http_status in (401, 402, 403):
                 break
-        except Exception:  # noqa: BLE001 - one batch must not lose the others
-            log.warning("vocabulary translation batch crashed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - one batch must not lose the others
+            log.exception("vocabulary translation batch crashed: %s", exc)
             stats["failed_batches"] += 1
+            stats["error"] = "AI_PROVIDER_ERROR"
+            stats["error_uz"] = f"{type(exc).__name__}: {exc}"[:300]
         db.commit()
-    log.info("vocabulary translation: %s/%s words (%s batches, %s failed)",
-             stats["translated"], len(pending), stats["batches"], stats["failed_batches"])
+    log.info("vocabulary translation via %s: %s/%s words (%s batches, %s failed)%s",
+             stats["provider"] or "-", stats["translated"], len(pending), stats["batches"],
+             stats["failed_batches"], f" — {stats['error_uz']}" if stats["error_uz"] else "")
     return stats
 
 
@@ -172,43 +182,47 @@ def _translate_batch(db: Session, user_id: str, provider, model: str,
         usage.record_usage(db, user_id, FEATURE, provider.name, response.model,
                            response.tokens_in, response.tokens_out)
         try:
-            parsed = extract_json(response.content)
+            # Fenced, chatty or slightly-off answers are parsed defensively and checked against
+            # the expected shape before anything is written to the database.
+            parsed = parse_json_schema_content(response.content, TRANSLATION_JSON_SCHEMA,
+                                               label="Tarjima javobi")
+            items = parsed.get("translations") if isinstance(parsed, dict) else None
+            if not isinstance(items, list) or not items:
+                raise ValueError("Tarjima javobida 'translations' ro'yxati bo'sh")
         except ValueError as exc:
-            last_error = str(exc)[:200]
+            last_error = str(exc)[:300]
         else:
-            by_id = {}
-            for item in (parsed.get("translations") or []) if isinstance(parsed, dict) else []:
-                if isinstance(item, dict) and item.get("id"):
-                    by_id[str(item["id"])] = item
-            if not by_id:
-                last_error = "no usable translations in the answer"
-            else:
-                done = 0
-                for word in batch:
-                    item = by_id.get(word.id)
-                    if not item:
-                        continue
-                    translation = clean_translation(item.get("translation_uz"))
-                    if not translation:
-                        continue
-                    alts = [clean_translation(alt) for alt in (item.get("alt_translations") or [])]
-                    word.translation_uz = translation
-                    word.alt_translations = [alt for alt in alts if alt and alt != translation][:3]
-                    word.translation_status = "auto"
-                    # "auto" is immediately usable: the word enters tests, with a badge.
-                    word.needs_translation = False
-                    done += 1
-                if done:
-                    return done
-                last_error = "answers did not match any entry id"
+            by_id = {str(item["id"]): item for item in items
+                     if isinstance(item, dict) and item.get("id") is not None}
+            done = 0
+            for word in batch:
+                item = by_id.get(word.id)
+                if not item:
+                    continue
+                translation = clean_translation(item.get("translation_uz"))
+                if not translation:
+                    continue
+                alts = [clean_translation(alt) for alt in (item.get("alt_translations") or [])]
+                word.translation_uz = translation
+                word.alt_translations = [alt for alt in alts if alt and alt != translation][:3]
+                word.translation_status = "auto"
+                # "auto" is immediately usable: the word enters tests, with a badge.
+                word.needs_translation = False
+                done += 1
+            if done:
+                return done
+            last_error = (f"Javobdagi {len(by_id)} ta id hech bir so'zga mos kelmadi "
+                          f"(kutilgan: {', '.join(w.id[:8] for w in batch[:3])}…)")
         log.warning("vocabulary translation bad output (attempt %s): %s", attempt + 1, last_error)
         if attempt == 0:
             messages = messages + [
-                ChatMessage(role="assistant", content=response.content[:3000]),
-                ChatMessage(role="user", content="Return ONLY the requested JSON, one object per "
-                                                 f"given id. Problem: {last_error}"),
+                ChatMessage(role="assistant", content=(response.content or "")[:3000]),
+                ChatMessage(role="user", content=(
+                    "Return ONLY the requested JSON, one object per given id, and copy each "
+                    f"'id' exactly as given. Problem: {last_error}")),
             ]
-    return 0
+    reason = last_error or "sabab noma'lum"
+    raise ApiError("AI_BAD_OUTPUT", f"Tarjima javobi kutilgan formatda emas: {reason}", 502)
 
 
 def missing_translations(db: Session, book_id: str, limit: int = 400) -> list[VocabularyWord]:

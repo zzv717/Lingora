@@ -530,13 +530,14 @@ def _b64(content: bytes) -> dict[str, str]:
 
 
 def _complete(provider, messages, model: str, schema: dict[str, Any] | None, max_tokens: int = 3000):
-    """Structured call; providers without schema support fall back to JSON mode."""
-    try:
-        return provider.complete(messages, model=model, max_tokens=max_tokens, temperature=0.1,
-                                 json_mode=True, json_schema=schema)
-    except TypeError:  # a third-party provider implementation with the old signature
-        return provider.complete(messages, model=model, max_tokens=max_tokens, temperature=0.1,
-                                 json_mode=True)
+    """Structured call. Every provider accepts ``json_schema`` and adapts it itself.
+
+    The old ``except TypeError`` retry looked helpful but hid the real problem: it swallowed a
+    signature mismatch (Gemini did not accept ``json_schema``) and turned a precise provider
+    bug into a silent, schema-less call.
+    """
+    return provider.complete(messages, model=model, max_tokens=max_tokens, temperature=0.1,
+                            json_mode=True, json_schema=schema)
 
 
 def detect_page(db: Session, user_id: str, book, page_number: int, *,
