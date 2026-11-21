@@ -32,6 +32,10 @@ export interface Book {
   description: string;
   created_at: string;
   updated_at: string;
+  /** Entries the text parser recovered at analysis time (0 = it found nothing). */
+  text_vocabulary_count?: number;
+  /** Ready-made Uzbek explanation of why the Lug'at is incomplete, if it is. */
+  vocabulary_note_uz?: string;
 }
 
 export interface Job {

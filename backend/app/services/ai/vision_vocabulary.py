@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -94,6 +95,39 @@ Rules:
 "definition":"When someone is afraid, they feel fear.","example":"The woman was afraid of what she saw.",
 "bbox":[0.1,0.13,0.9,0.2],"confidence":0.95}],"warnings":[]}
 """
+
+
+# Sent to the provider as a strict response schema, not just described in the prompt: the
+# model then cannot answer with prose, markdown or a renamed field. Every object lists all
+# of its keys in "required" because strict mode rejects optional properties.
+VOCABULARY_JSON_SCHEMA: dict[str, Any] = {
+    "title": "vocabulary_page",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["is_word_list", "unit", "entries", "warnings"],
+    "properties": {
+        "is_word_list": {"type": "boolean"},
+        "unit": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "entries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["word", "part_of_speech", "definition", "example", "bbox"],
+                "properties": {
+                    "word": {"type": "string"},
+                    "part_of_speech": {"type": "string"},
+                    "definition": {"type": "string"},
+                    "example": {"type": "string"},
+                    # Every entry carries a box, so null is expressed as an empty array:
+                    # strict schemas reject nullable unions.
+                    "bbox": {"type": "array", "items": {"type": "number"}},
+                },
+            },
+        },
+    },
+}
 
 
 @dataclass
@@ -203,7 +237,8 @@ def normalize_word_list(raw: Any) -> VWordList:
             definition_en=_s(item.get("definition") or item.get("definition_en"), 1000),
             example_sentence=clean_example(item.get("example") or item.get("example_sentence")),
             translation_uz=_s(item.get("translation_uz"), 512),
-            bbox=_region_bbox(item.get("bbox")),
+            # An empty array is how the strict schema expresses "no box" (it rejects null).
+            bbox=_region_bbox(item.get("bbox")) if item.get("bbox") else None,
             confidence=_confidence(item.get("confidence")),
         ))
     warnings = [_s(w, 300) for w in (raw.get("warnings") or []) if isinstance(w, str)][:10]
@@ -222,8 +257,19 @@ def words_as_preview(result: VWordList, page_number: int = 0) -> list[dict[str, 
 # ----------------------------------------------------------------------------------------------
 # Provider call
 # ----------------------------------------------------------------------------------------------
-def analyse_page(db: Session, user_id: str, book, page_number: int) -> tuple[VWordList, str, str]:
-    """Render one page, ask the vision model, validate. Returns (result, provider, model)."""
+def analyse_page(db: Session, user_id: str, book, page_number: int,
+                 retries: int | None = None) -> tuple[VWordList, str, str]:
+    """Render one page, ask the vision model, validate. Returns (result, provider, model).
+
+    The page is rendered server-side and sent as an image, so a book whose text layer is
+    unusable (scanned, or a layout the rules cannot describe) is still readable. The answer
+    is constrained by ``VOCABULARY_JSON_SCHEMA``; when a provider ignores the schema the
+    reply is repaired once and then rejected — nothing half-parsed is ever returned.
+
+    Transient transport failures (timeout, 5xx, a dropped pooled connection) are retried
+    here instead of failing the page: on serverless a single retry is the difference
+    between a partial Lug'at and a complete one.
+    """
     from app.services.ai.vision_map import render_pages  # reuse the bounded renderer
 
     provider = get_provider()
@@ -232,6 +278,9 @@ def analyse_page(db: Session, user_id: str, book, page_number: int) -> tuple[VWo
         raise ApiError("AI_VISION_NOT_CONFIGURED", "Vision modeli sozlanmagan (AI_VISION_MODEL yoki AI_MODEL).", 503)
     usage.enforce_feature_quota(db, user_id, FEATURE, settings.vision_exercise_pages_per_day)
     images = render_pages(book, [page_number])
+    if not images:
+        raise ApiError("AI_VISION_RENDER_FAILED",
+                       "Sahifa rasmi tayyorlanmadi; kitob fayli topilmadi yoki o'qilmadi.", 503)
     messages = [
         ChatMessage(role="system", content=PROMPT),
         ChatMessage(role="user", content=json.dumps({"pdf_page": page_number,
@@ -239,11 +288,23 @@ def analyse_page(db: Session, user_id: str, book, page_number: int) -> tuple[VWo
                     images=images),
     ]
     log.debug("vision vocabulary: page %s, provider=%s model=%s", page_number, provider.name, model)
+    attempts = settings.ai_max_retries + 1 if retries is None else retries + 1
     last_error = ""
-    for attempt in range(2):
-        if attempt:  # the repair call is a separate paid call: count it against the quota too
-            usage.enforce_feature_quota(db, user_id, FEATURE, settings.vision_exercise_pages_per_day)
-        response = provider.complete(messages, model=model, max_tokens=4000, temperature=0.1, json_mode=True)
+    for attempt in range(attempts + 1):
+        try:
+            response = provider.complete(messages, model=model, max_tokens=4000,
+                                         temperature=0.1, json_mode=True,
+                                         json_schema=VOCABULARY_JSON_SCHEMA)
+        except ApiError as exc:
+            # Only transport-level trouble is worth repeating. A configuration or quota
+            # problem will fail identically on every page, so it is raised immediately.
+            if exc.http_status < 500 and exc.http_status != 429 or attempt >= attempts:
+                raise
+            delay = min(2.0 * (attempt + 1), 6.0)
+            log.warning("vision vocabulary: page %s provider error %s (%s); retry in %.1fs",
+                        page_number, exc.code, exc.http_status, delay)
+            time.sleep(delay)
+            continue
         usage.record_usage(db, user_id, FEATURE, provider.name, response.model,
                            response.tokens_in, response.tokens_out)
         try:
@@ -254,7 +315,7 @@ def analyse_page(db: Session, user_id: str, book, page_number: int) -> tuple[VWo
         except (ValueError, TypeError) as exc:
             last_error = str(exc)[:300]
             log.warning("vision vocabulary bad output (attempt %s): %s", attempt + 1, last_error)
-            if not attempt:
+            if attempt < attempts:
                 messages = messages + [
                     ChatMessage(role="assistant", content=response.content[:4000]),
                     ChatMessage(role="user", content="Return ONLY valid JSON in the exact requested shape. "

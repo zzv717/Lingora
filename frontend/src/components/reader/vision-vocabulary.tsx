@@ -6,7 +6,7 @@ import { Button } from "@/components/ui";
 
 type BatchPage = {
   page: number;
-  status: "ok" | "not_a_word_list" | "skipped" | "error";
+  status: "ok" | "not_a_word_list" | "skipped" | "deferred" | "error";
   unit?: string;
   words_found?: number;
   words_added?: number;
@@ -60,16 +60,31 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
     return () => { alive = false; };
   }, [bookId, allPages]);
 
+  // Two independent things gate the run, and they are not the same permission:
+  //   * image consent — the page image leaves the server for the model;
+  //   * a worklist — there is something left to read.
+  // The old code required consent even when the checkbox had been ticked in another
+  // component, and enabled the button before the page list had loaded, so a click did
+  // nothing. Both are computed here, from state, once.
+  const canRun = consent && remaining > 0 && !busy;
+
   async function run() {
-    if (!consent || busy) return;
+    if (!canRun) return;
     setBusy(true); setError(""); setResults([]); setRead(0); stopRef.current = false;
     let readSoFar = 0;
     try {
       while (!stopRef.current && readSoFar < PAGES_PER_RUN) {
-        // Empty page list = "read the next pending pages"; the server owns the batch size.
-        const out = await post<BatchOut>(`/books/${bookId}/vision-vocabulary/batch`,
-          { consent_images_to_provider: true, include_text_pages: allPages, pages: [] });
-        readSoFar += out.processed;
+        // Empty page list = "read the next pending pages"; the server owns the batch size
+        // and the consent flag is sent on EVERY request that touches a page image.
+        const out = await post<BatchOut>(`/books/${bookId}/vision-vocabulary/batch`, {
+          consent_images_to_provider: consent,
+          include_text_pages: allPages,
+          pages: [],
+        });
+        // Only pages that were actually read count towards this run's page budget; a
+        // deferred page is untouched work for the next call.
+        const readNow = out.results.filter((r) => r.status !== "deferred").length;
+        readSoFar += readNow;
         setRead(readSoFar);
         setRemaining(out.remaining_pages);
         setResults((prev) => [...prev, ...out.results]);
@@ -80,7 +95,7 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
           setError(failed?.message ?? "Skanerlash to'xtatildi.");
           break;
         }
-        if (!out.processed || !out.remaining_pages) break;   // nothing left to read
+        if (!readNow || !out.remaining_pages) break;   // nothing left to read
       }
     } catch (e) {
       const err = e instanceof ApiErr ? e : null;
@@ -92,12 +107,15 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
 
   const added = results.reduce((n, r) => n + (r.words_added ?? 0), 0);
   const failed = results.filter((r) => r.status === "error");
+  const deferred = results.filter((r) => r.status === "deferred");
   const skipped = results.filter((r) => r.status === "not_a_word_list");
 
   function line(r: BatchPage) {
     if (r.status === "error") return r.message ?? "Sahifa o'qilmadi";
     if (r.status === "not_a_word_list") return "lug'at sahifasi emas";
     if (r.status === "skipped") return r.message ?? "o'tkazib yuborildi";
+    // The request ran out of time; the page is untouched and the next call picks it up.
+    if (r.status === "deferred") return "keyingi so'rovda o'qiladi";
     const unit = r.unit ? `${r.unit}-unit · ` : "";
     return `${unit}${r.words_added ?? 0} ta yangi so'z`;
   }
@@ -129,21 +147,29 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         </span>
       </label>
       <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" loading={busy} disabled={!consent || !remaining} onClick={run}>
+        <Button variant="secondary" loading={busy} disabled={!canRun} onClick={run}>
           {busy
             ? `O'qilmoqda: ${current ?? "..."} (${read}/${Math.min(PAGES_PER_RUN, remaining + read)})`
-            : remaining
-              ? `Lug'atni o'qish (${Math.min(PAGES_PER_RUN, remaining)} sahifa)`
-              : "Hamma sahifa o'qildi"}
+            : !remaining
+              ? "Hamma sahifa o'qildi"
+              : !consent
+                ? "Avval rozilikni belgilang"
+                : `Lug'atni o'qish (${Math.min(PAGES_PER_RUN, remaining)} sahifa)`}
         </Button>
         {busy && <Button variant="ghost" onClick={() => { stopRef.current = true; }}>To'xtatish</Button>}
       </div>
+      {!consent && remaining > 0 && (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          Tugma ishlashi uchun rozilik katakchasini belgilang — sahifa rasmi AI xizmatiga yuboriladi.
+        </p>
+      )}
       {error && <p role="alert" className="text-red-700 dark:text-red-300">{error}</p>}
       {!!results.length && (
         <div className="rounded-lg bg-slate-100 p-3 text-xs dark:bg-slate-800" role="status">
           <p className="font-medium">
             Jami {added} ta so'z qo'shildi · {results.length} sahifa o'qildi
             {skipped.length ? ` · ${skipped.length} sahifa lug'at emas` : ""}
+            {deferred.length ? ` · ${deferred.length} sahifa keyingi so'rovga qoldi` : ""}
             {failed.length ? ` · ${failed.length} ta xato` : ""}
           </p>
           <ul className="mt-2 max-h-40 space-y-1 overflow-auto">

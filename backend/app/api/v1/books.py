@@ -2,6 +2,7 @@
 import io
 import logging
 import math
+import time
 import uuid
 from datetime import timedelta
 from datetime import datetime, timezone
@@ -591,6 +592,57 @@ def _vocabulary_page(db: Session, book, page_number: int, data: VisionVocabulary
     return page
 
 
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError  # noqa: E402
+
+# Connection-level failures that a retry on a fresh connection can fix (the server closed
+# an idle pooled connection, the pooler recycled it, TLS dropped). Anything else — a bad
+# request, a constraint violation — is a real error and must not be repeated.
+_TRANSIENT_DB_MARKERS = ("server closed the connection", "connection was closed",
+                         "connection already closed", "ssl connection has been closed",
+                         "terminating connection", "connection reset", "broken pipe",
+                         "could not connect", "server has gone away", "no connection to the server")
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """True when the database connection died, not when the statement was wrong."""
+    if isinstance(exc, (DisconnectionError, OperationalError)):
+        return True
+    if isinstance(exc, DBAPIError):
+        text = str(exc).lower()
+        return any(marker in text for marker in _TRANSIENT_DB_MARKERS)
+    return False
+
+
+def _retry_save(db: Session, book, page_number: int, holder: dict[str, Any],
+                attempts: int = 2) -> bool:
+    """Re-run the write part of one page after a dropped connection.
+
+    The model call is already paid for, so losing its result to a dropped socket is a real
+    loss. ``db.rollback()`` returns the session's connection to the pool and the next query
+    takes a live one (``pool_pre_ping`` verifies it), after which the same page can be
+    written again. Idempotent because ``save_words`` skips terms that already exist.
+    """
+    from app.services.ai.vision_vocabulary import mark_scanned, save_words
+
+    parsed = holder.get("result")
+    if parsed is None:
+        return False
+    for attempt in range(attempts):
+        try:
+            db.rollback()
+            # ``save_words`` skips terms that are already stored, so a retry after a commit
+            # that did land cannot duplicate the page's words.
+            holder["saved"] = save_words(db, book, page_number, parsed)
+            mark_scanned(db, book, page_number)
+            log.warning("vision vocabulary: page %s re-saved after a dropped connection", page_number)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vision vocabulary: retry %s for page %s failed: %s",
+                        attempt + 1, page_number, exc)
+            time.sleep(0.5 * (attempt + 1))
+    return False
+
+
 # One batch = one serverless request = one bounded set of paid model calls. A page takes
 # a few seconds, so 10 keeps a request well inside a Vercel function's limit while still
 # covering a whole unit pair (20-40 words) per call.
@@ -621,11 +673,25 @@ def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, req
     results: list[dict[str, Any]] = []
     added_total = 0
     stop = False
+    # A serverless function is killed at its timeout, and a killed request loses the whole
+    # batch — including pages already paid for. Counting pages is not enough: a slow model
+    # can take a third of the budget for one page. So the loop also watches the clock and
+    # stops STARTING new pages once the budget is spent, leaving them for the next request.
+    # ``remaining_pages`` tells the client to call again.
+    started = time.monotonic()
+    budget = settings.vocab_vision_batch_seconds
     for page_number in wanted:
+        if not stop and results and time.monotonic() - started > budget:
+            results.append({"page": page_number, "status": "deferred",
+                            "reason": "request budget spent; call the batch again",
+                            "words_added": 0})
+            continue
         if stop:
             results.append({"page": page_number, "status": "skipped",
                             "reason": "batch stopped by a previous error", "words_added": 0})
             continue
+        result_holder: dict[str, Any] = {}
+        result = None
         try:
             result, _provider, _model = analyse_page(db, user.id, book, page_number)
             if not result.is_word_list:
@@ -634,6 +700,10 @@ def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, req
                                 "unit": result.unit, "words_added": 0})
                 continue
             saved = save_words(db, book, page_number, result)
+            # Published before the stamp so a failed stamp can be retried without redoing
+            # the paid model call.
+            result_holder.update(result=result, unit=result.unit,
+                                 entries=[w.term for w in result.words], saved=saved)
             mark_scanned(db, book, page_number)
             added_total += saved["words_added"]
             results.append({"page": page_number, "status": "ok", "unit": result.unit,
@@ -648,13 +718,29 @@ def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, req
                                                       "AI_PROVIDER_REJECTED", "AI_BAD_OUTPUT"):
                 stop = True
         except Exception as exc:  # noqa: BLE001 - one bad page must not lose the batch
+            # A dropped pooled connection and a genuinely unreadable page look the same
+            # from here, and they need opposite handling: the first must be retried on a
+            # fresh connection, the second must not cost another paid model call. The
+            # model call has already been paid for by the time we write, so a retry only
+            # repeats the write, and the page's words are still in ``result``/``saved``.
             log.warning("vision vocabulary batch: page %s failed: %s", page_number, exc)
             db.rollback()
+            if _is_transient_db_error(exc) and _retry_save(db, book, page_number, result_holder):
+                saved = result_holder.pop("saved", {"words_added": 0, "words_found": 0})
+                added_total += saved["words_added"]
+                results.append({"page": page_number, "status": "ok", "unit": result_holder.get("unit", ""),
+                                "words_found": saved["words_found"],
+                                "words_added": saved["words_added"],
+                                "entries": result_holder.get("entries", []),
+                                "retried": True})
+                continue
             results.append({"page": page_number, "status": "error", "code": "PAGE_FAILED",
-                            "message": "Sahifa o'qilmadi.", "words_added": 0})
+                            "message": "Sahifa o'qilmadi (ma'lumotlar bazasi bilan aloqa).",
+                            "words_added": 0})
     remaining = len(pending_pages(db, book, include_text_pages=data.include_text_pages))
     return {"book_id": book.id, "processed": len(results), "words_added": added_total,
-            "remaining_pages": remaining, "stopped": stop, "results": results}
+            "remaining_pages": remaining, "stopped": stop,
+            "elapsed_seconds": round(time.monotonic() - started, 1), "results": results}
 
 
 @router.get("/{book_id}/vision-vocabulary/pending")

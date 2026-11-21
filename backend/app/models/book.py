@@ -23,6 +23,16 @@ class Book(Base, UuidPk, Timestamps):
     consent_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     cover_page: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # How many entries the text parser recovered at analysis time. Persisted instead of
+    # recomputed because the fallback decision must survive a restart: a book whose text
+    # layer yielded nothing is exactly the book that needs the vision pass, and the
+    # question "why is my Lug'at empty" has to be answerable long after the upload.
+    text_vocabulary_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False,
+                                                       server_default="0")
+    # Why the Lug'at is empty, in the user's language. Written by the pipeline so the
+    # screen can explain itself instead of showing a bare "no vocabulary found".
+    vocabulary_note_uz: Mapped[str] = mapped_column(Text, default="", nullable=False,
+                                                    server_default="")
 
     pages: Mapped[list["BookPage"]] = relationship(
         back_populates="book", cascade="all, delete-orphan", order_by="BookPage.page_number"

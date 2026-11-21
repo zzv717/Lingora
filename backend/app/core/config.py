@@ -107,6 +107,22 @@ class Settings(BaseSettings):
     # for one provider round trip at a time.
     ai_enrich_workers: int = 4
 
+    # --- automatic vision fallback for vocabulary ---
+    # A book whose text parser recovers fewer entries than this is treated as unreadable
+    # by the rules: the vision pass then reads the pages itself, without the user having
+    # to notice, tick a box and press a button. 0 disables the fallback entirely.
+    vocab_vision_fallback_min_entries: int = 10
+    # Pages the automatic pass may read in one analysis. Each page is a paid model call,
+    # so this is a hard ceiling, not a target; the rest stays in the manual worklist.
+    vocab_vision_fallback_pages: int = 24
+    # A page that yields fewer entries than this did not really work, even though the
+    # model answered: it is retried once at higher resolution before being accepted.
+    vocab_vision_min_page_entries: int = 3
+    # Wall-clock budget for one batch request. Pages not started within it are reported as
+    # "deferred" and the client asks again, so a serverless timeout can never swallow a
+    # batch that was already paid for.
+    vocab_vision_batch_seconds: float = 45.0
+
     # --- Plan limits (subscription-ready; MVP is free, no payments anywhere) ---
     free_max_books: int = 3
     pro_max_books: int = 25
@@ -165,6 +181,16 @@ class Settings(BaseSettings):
     @property
     def ai_configured(self) -> bool:
         return self.ai_provider != "none" and bool(self.ai_api_key) and bool(self.ai_model)
+
+    @property
+    def ai_vision_configured(self) -> bool:
+        """True when a page image can be sent: needs a key and an image-capable model.
+
+        ``AI_VISION_MODEL`` may be set on its own — a deployment can have vision without
+        wanting every other AI feature — so this must not require ``AI_MODEL``.
+        """
+        return (self.ai_provider != "none" and bool(self.ai_api_key)
+                and bool((self.ai_vision_model or self.ai_model).strip()))
 
     def plan_limits(self, plan: str) -> dict:
         limits = {

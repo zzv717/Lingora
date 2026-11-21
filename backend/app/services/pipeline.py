@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -239,6 +240,9 @@ class Pipeline:
 
         self.progress(65, "vocabulary", commit=False)
         # ---- persist vocabulary ----
+        # How well the TEXT parser did decides whether vision is needed at all. This is the
+        # number the Lug'at screen explains itself with, and the trigger for the automatic
+        # fallback below, so it is recorded even when it is zero.
         seen_terms = set()
         for v in structure.vocabulary:
             term = v["term"].strip()
@@ -258,6 +262,19 @@ class Pipeline:
                 picture_page=(v.get("picture") or {}).get("page_number"),
                 picture_bbox=(v.get("picture") or {}).get("bbox"),
             ))
+
+        # ---- automatic vision fallback ----
+        # A book whose word lists the rules cannot describe ends up with an empty Lug'at,
+        # and the user cannot tell that from "this book has no vocabulary". Rather than ask
+        # them to notice a checkbox and press a button, the analysis itself reads a bounded
+        # number of pages with the vision model and says so. Nothing is replaced, nothing is
+        # translated, and a failure here never fails the upload.
+        fallback = self._vision_vocabulary_fallback(book, pages, len(structure.vocabulary))
+        structure.warnings.extend(fallback["warnings"])
+        # The text count stays as measured; the vision contribution is visible in the words
+        # themselves (source="vision") and in the note, so the two numbers are never mixed.
+        book.text_vocabulary_count = len(structure.vocabulary)
+        book.vocabulary_note_uz = fallback["note_uz"]
 
         # ---- record answer key pages ----
         for ak in structure.answer_key_entries:
@@ -310,3 +327,91 @@ class Pipeline:
         self.progress(100, "validating")
         self.job.stage_label_uz = "Tayyor!"
         self.db.commit()
+
+    def _vision_vocabulary_fallback(self, book: Book, pages: list[dict[str, Any]],
+                                    text_count: int) -> dict[str, Any]:
+        """Read word lists with the vision model when the text parser found (almost) none.
+
+        Returns ``{"words_added", "note_uz", "warnings"}`` and never raises: a vision failure
+        must not turn a readable book into a failed upload. The worklist is bounded by
+        ``vocab_vision_fallback_pages`` because every page is a paid call, and pages already
+        read once (``vocab_scanned_at``) are skipped, so re-analysis does not re-bill.
+        """
+        result: dict[str, Any] = {"words_added": 0, "note_uz": "", "warnings": []}
+        minimum = settings.vocab_vision_fallback_min_entries
+        if minimum <= 0 or text_count >= minimum:
+            return result
+        if not settings.ai_vision_configured:
+            result["note_uz"] = (
+                f"Matn ajratgich bu kitobdan {text_count} ta so'z topdi, AI (vision) esa "
+                "sozlanmagan — shuning uchun lug'at to'liq emas.")
+            log.info("vocabulary: %s entries from the text layer, vision not configured", text_count)
+            return result
+        try:
+            from app.services.ai.vision_vocabulary import (analyse_page, mark_scanned,
+                                                           pending_pages, save_words)
+
+            book.page_count = book.page_count or len(pages)
+            worklist = pending_pages(self.db, book, include_text_pages=True)
+            if text_count == 0:
+                # Nothing parsed at all: the word lists are somewhere in the book and page
+                # order is the only honest hint left, so keep the whole book in the list.
+                worklist = worklist or [p["page_number"] for p in pages]
+            worklist = worklist[:max(1, settings.vocab_vision_fallback_pages)]
+            if not worklist:
+                return result
+
+            added = 0
+            read = 0
+            for page_number in worklist:
+                try:
+                    parsed, _provider, _model = analyse_page(
+                        self.db, book.user_id, book, page_number,
+                        retries=settings.ai_max_retries)
+                except ApiError as exc:
+                    log.warning("vocabulary fallback: page %s failed (%s)", page_number, exc.code)
+                    result["warnings"].append({
+                        "page": page_number, "code": "VOCABULARY_VISION_PAGE_FAILED",
+                        "message_uz": f"{page_number}-sahifani AI o'qiy olmadi ({exc.code})."})
+                    # An account-level problem will repeat on every page: stop paying for it.
+                    if exc.http_status in (401, 402, 403) or exc.code in (
+                            "AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED",
+                            "AI_QUOTA_EXCEEDED", "AI_FEATURE_QUOTA_EXCEEDED",
+                            "AI_TOKEN_QUOTA_EXCEEDED"):
+                        result["note_uz"] = (
+                            "Matn ajratgich bu kitobdan so'z topa olmadi; AI (vision) ham "
+                            f"javob bermadi: {exc.message_uz}")
+                        break
+                    continue
+                except Exception:  # noqa: BLE001 - never fail the upload over one page
+                    log.warning("vocabulary fallback: page %s crashed", page_number, exc_info=True)
+                    continue
+                read += 1
+                if not parsed.is_word_list or not parsed.words:
+                    mark_scanned(self.db, book, page_number)
+                    continue
+                saved = save_words(self.db, book, page_number, parsed)
+                added += saved["words_added"]
+                mark_scanned(self.db, book, page_number)
+
+            result["words_added"] = added
+            log.info("vocabulary fallback: read %s pages, added %s words (text layer had %s)",
+                     read, added, text_count)
+            if added:
+                result["note_uz"] = (
+                    f"Kitobning matn qatlamidan {text_count} ta so'z topildi; qolganini AI rasm "
+                    f"orqali o'qidi ({added} ta so'z qo'shildi). Tarjimalar hali yo'q — "
+                    "«tekshirilishi kerak» deb belgilangan.")
+                result["warnings"].append({
+                    "page": 0, "code": "VOCABULARY_VISION_FALLBACK",
+                    "message_uz": result["note_uz"]})
+            else:
+                result["note_uz"] = (
+                    "Matn ajratgich ham, AI ham bu kitobdan lug'at topa olmadi. Kitobda alohida "
+                    "lug'at ro'yxatlari bo'lmasligi mumkin.")
+        except Exception:  # noqa: BLE001 - the fallback is best-effort by design
+            log.warning("vocabulary: automatic vision fallback failed", exc_info=True)
+            result["warnings"].append({
+                "page": 0, "code": "VOCABULARY_VISION_FALLBACK_FAILED",
+                "message_uz": "AI orqali lug'at o'qish ishlamadi; kitob tahlili davom etdi."})
+        return result
