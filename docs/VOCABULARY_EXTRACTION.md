@@ -245,3 +245,79 @@ built from the book's own text layer, because this sandbox has no provider key) 
 stored words, 1 rejected entry, 544 `auto` translations, 0 duplicates, and a second full run
 replaced 544 words / 32 units with an identical result — no accumulation. **Model accuracy
 is not verified here**: that needs a real `AI_API_KEY`/`AI_VISION_MODEL`.
+
+---
+
+# Provider parity: why translation failed with `AI_PROVIDER=gemini`
+
+## Root cause
+
+`AIProvider.complete()` declared `json_schema` and `OpenAICompatibleProvider` implemented it,
+but **`GeminiProvider.complete()` (and `AnthropicProvider.complete()`) did not accept the
+argument at all**. Every structured caller — vocabulary pages, unit headings, translations,
+exercise-region detection — passed `json_schema=...`, so with Gemini configured the call
+raised before any HTTP request was made:
+
+```
+TypeError: GeminiProvider.complete() got an unexpected keyword argument 'json_schema'
+```
+
+`vision_regions._complete` hid it behind an `except TypeError:` that silently retried without
+the schema, and the translation pass reported the batch as failed, after which the UI said
+"AI sozlanmagan yoki javob bermadi" — for a provider that was configured and never asked.
+
+## What changed
+
+* **One signature, enforced by a test.** All providers accept
+  `complete(messages, model=None, max_tokens=3000, temperature=0.2, json_mode=False, json_schema=None)`.
+  `tests/test_ai_provider_parity.py` compares `inspect.signature` of every provider with the
+  base class, so a new provider that forgets `json_schema` fails the suite.
+* **Gemini structured output.** `to_gemini_schema()` converts a JSON schema to Gemini's
+  OpenAPI dialect: uppercase types, `nullable` for `["string","null"]`, `items`/`properties`/
+  `required` preserved, and unsupported keys (`additionalProperties`, `title`, `$schema`)
+  removed. The request then carries `generationConfig.responseMimeType = "application/json"`
+  and `responseSchema`. If the schema cannot be converted (free-form object, exotic union),
+  the schema is stated in the prompt instead, and the parser still checks the shape. If a
+  model rejects `responseSchema` with 400, the call is retried once in plain JSON mode.
+* **Anthropic** accepts the same argument and states the schema in the prompt.
+* **Defensive parsing everywhere.** `parse_json_schema_content()` strips ```json fences and
+  leading prose, then checks required keys/types (`validate_shape`) before the normaliser
+  runs; a wrong answer now fails with `$.translations[0].id: missing` instead of silently
+  producing nothing.
+* **Real errors reach the user.** 4xx responses from Gemini/Anthropic used to be swallowed by
+  `raise_for_status()`. They now raise `AI_PROVIDER_REJECTED` with the provider's own message
+  (`Gemini xatosi (400): API key not valid…`), which is returned as `error_uz` by
+  `/vocabulary/translate-missing`, `/{book}/vocabulary/translate` and `.../translate`, and
+  shown under the Lug'at header. An empty or safety-blocked answer says so.
+* **Repeating failures stop the run.** `vocab_extract` stops reading pages after
+  `AI_PROVIDER_REJECTED` / `AI_NOT_CONFIGURED` / quota codes instead of paying for 196
+  identical failures.
+
+## Environment variables for Vercel
+
+| Variable | Value |
+| --- | --- |
+| `AI_PROVIDER` | `gemini` |
+| `AI_API_KEY` | your Google AI Studio key (sent as `x-goog-api-key`, never logged) |
+| `AI_MODEL` | text model, e.g. `gemini-2.0-flash` (`gemini-1.5-flash` also works) |
+| `AI_VISION_MODEL` | optional; a vision-capable model for page images, e.g. `gemini-2.0-flash` |
+| `AI_MAX_RETRIES` | optional, default 2 |
+
+`GEMINI_API_KEY` is **not** read by this code: the single `AI_API_KEY` is passed to whichever
+provider `AI_PROVIDER` names. If you prefer that name, add it to Vercel as an alias of the
+same value — but the app only reads `AI_API_KEY`.
+
+## Verified locally (no real key in this sandbox)
+
+* `backend/tests/test_ai_provider_parity.py` — 14 tests: identical signatures, Gemini schema
+  payload, schema fallback, 400-on-schema retry, provider message in the error, fenced/chatty
+  JSON parsing, and **the same 5-word translation (afraid, agree, angry, arrive, attack)
+  through each of the three providers**, asserting `translation_uz` is non-empty and
+  `status=auto`.
+* Unit 6 (10 words) translated through the real `GeminiProvider` with a simulated HTTP layer:
+  10/10 stored, `auto`, `responseSchema` present in the request.
+* `frontend/tests/vocabulary-auto-badge.test.cjs` renders `/vocabulary` and asserts 9 `auto`
+  badges and exactly 1 red "Tarjima yo'q" for the word with no translation.
+
+What is **not** verified here: a real Gemini round-trip. That needs `AI_API_KEY` in Vercel;
+if the key is wrong the UI now prints Google's own message instead of a generic sentence.

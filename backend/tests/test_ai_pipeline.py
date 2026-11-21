@@ -36,6 +36,9 @@ def test_pipeline_calls_configured_ai_and_saves_explanations(client, monkeypatch
     monkeypatch.setattr(settings, "ai_provider", "gemini")
     monkeypatch.setattr(settings, "ai_model", "test-model")
     monkeypatch.setattr(settings, "ai_api_key", "fake-key")
+    # These tests are about enrichment. The automatic *vision* fallback would make real HTTP
+    # calls (the provider is mocked only for `enrich`), so it is switched off here.
+    monkeypatch.setattr(settings, "vocab_vision_fallback_min_entries", 0)
     calls = []
     def fake_structured(schema, messages, **kwargs):
         calls.append(schema.__name__)
@@ -66,6 +69,7 @@ def test_pipeline_reports_failed_ai_but_keeps_basic_analysis(client, monkeypatch
     monkeypatch.setattr(settings, "ai_provider", "gemini")
     monkeypatch.setattr(settings, "ai_model", "test-model")
     monkeypatch.setattr(settings, "ai_api_key", "fake-key")
+    monkeypatch.setattr(settings, "vocab_vision_fallback_min_entries", 0)
     def fail(*args, **kwargs):
         raise RuntimeError("provider unavailable")
     monkeypatch.setattr(enrich, "structured", fail)

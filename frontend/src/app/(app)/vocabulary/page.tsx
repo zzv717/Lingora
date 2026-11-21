@@ -171,6 +171,7 @@ export default function VocabularyPage() {
   const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
   const [translating, setTranslating] = useState(false);
   const [regenerating, setRegenerating] = useState<string>("");
+  const [translateError, setTranslateError] = useState("");
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [job, setJob] = useState<Job | null>(null);
@@ -306,13 +307,19 @@ export default function VocabularyPage() {
   const translateMissing = async () => {
     if (!selected) return;
     setTranslating(true);
+    setTranslateError("");
     try {
-      const out = await post<{ translated: number; remaining: number; error?: string }>(
+      const out = await post<{ translated: number; remaining: number; error?: string; error_uz?: string }>(
         `/books/${selected}/vocabulary/translate-missing?limit=150`);
       if (out.translated) {
         toast(`${out.translated} ta so'z tarjima qilindi${out.remaining ? ` · ${out.remaining} ta qoldi` : ""}`, "success");
+      } else if (out.error_uz) {
+        // The provider's own words ("Gemini xatosi (400): API key not valid…") — a bare error
+        // code would make the user guess what to change in Vercel.
+        setTranslateError(out.error_uz);
+        toast(out.error_uz, "error");
       } else {
-        toast(out.error ? `Tarjima yaratilmadi (${out.error})` : "Tarjima kerak bo'lgan so'z yo'q", "error");
+        toast("Tarjima kerak bo'lgan so'z yo'q", "error");
       }
       setReloadToken((n) => n + 1);
     } catch (e) {
@@ -456,6 +463,11 @@ export default function VocabularyPage() {
                     </Button>
                   )}
                 </div>
+                {translateError && (
+                  <p role="alert" className="mt-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                    {translateError}
+                  </p>
+                )}
               </Card>
             )}
 

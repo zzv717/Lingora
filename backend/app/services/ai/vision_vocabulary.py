@@ -42,7 +42,7 @@ from app.core.config import settings
 from app.core.errors import ApiError
 from app.models import BookPage, Chapter, Lesson, VocabularyUnit, VocabularyWord
 from app.services.ai import usage
-from app.services.ai.provider import ChatMessage, extract_json, get_provider
+from app.services.ai.provider import ChatMessage, get_provider, parse_json_schema_content
 
 log = logging.getLogger("lingora.vision_vocabulary")
 
@@ -423,7 +423,11 @@ def analyse_page(db: Session, user_id: str, book, page_number: int,
         usage.record_usage(db, user_id, FEATURE, provider.name, response.model,
                            response.tokens_in, response.tokens_out)
         try:
-            result = normalize_word_list(extract_json(response.content))
+            # Defensive: fences/prose are tolerated, and the shape is checked before the
+            # normaliser sees it, so a Gemini-specific quirk is reported, not half-applied.
+            result = normalize_word_list(
+                parse_json_schema_content(response.content, VOCABULARY_JSON_SCHEMA,
+                                          label="Sahifa javobi"))
             log.info("vision vocabulary: page %s -> %s words (unit %r, word_list=%s)",
                      page_number, len(result.words), result.unit, result.is_word_list)
             return result, provider.name, response.model

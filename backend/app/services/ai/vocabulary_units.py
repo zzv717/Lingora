@@ -30,7 +30,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.errors import ApiError
 from app.services.ai import usage
-from app.services.ai.provider import ChatMessage, extract_json, get_provider
+from app.services.ai.provider import ChatMessage, get_provider, parse_json_schema_content
 from app.services.ai.vision_vocabulary import clean_unit_title
 
 log = logging.getLogger("lingora.vocabulary_units")
@@ -257,7 +257,9 @@ def _analyse_chunk(db, user_id: str, book, pages: list[int],
         usage.record_usage(db, user_id, FEATURE, provider.name, response.model,
                            response.tokens_in, response.tokens_out)
         try:
-            return normalize_headings(extract_json(response.content), pages)
+            return normalize_headings(
+                parse_json_schema_content(response.content, HEADINGS_JSON_SCHEMA,
+                                          label="Bo'limlar javobi"), pages)
         except (ValueError, TypeError) as exc:
             last_error = str(exc)[:200]
             log.warning("vocabulary unit pass: bad heading output for %s: %s", pages, last_error)
