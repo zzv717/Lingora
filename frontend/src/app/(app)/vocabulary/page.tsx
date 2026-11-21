@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { get, post } from "@/lib/api";
-import type { Book, Job, Structure, VocabSession, VocabWord } from "@/lib/types";
+import type { Book, Job, Structure, VocabSession, VocabUnit, VocabWord } from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, EmptyState, Spinner, useToast } from "@/components/ui";
 import { VocabPicture } from "@/components/reader/vocab-picture";
@@ -14,6 +14,9 @@ export default function VocabularyPage() {
   const [selected, setSelected] = useState<string>("");
   const [struct, setStruct] = useState<Structure | null>(null);
   const [words, setWords] = useState<VocabWord[]>([]);
+  // Units come from the extractor itself: a vocabulary book is organised per unit, and a
+  // flat list of 600 words gives no clue whether extraction actually worked.
+  const [units, setUnits] = useState<VocabUnit[] | null>(null);
   const [stats, setStats] = useState<{ learning: number; mastered: number; due: number; total: number } | null>(null);
   const [starting, setStarting] = useState(false);
   const [query, setQuery] = useState("");
@@ -37,11 +40,14 @@ export default function VocabularyPage() {
     if (!selected) return;
     setStruct(null);
     setWords([]);
+    setUnits(null);
     (async () => {
       const st = await get<Structure>(`/books/${selected}/structure`);
       setStruct(st);
       const w = await get<VocabWord[]>(`/books/${selected}/vocabulary`);
       setWords(w);
+      try { setUnits((await get<{ units: VocabUnit[] }>(`/books/${selected}/vocabulary/units`)).units); }
+      catch { setUnits([]); }
       // Why a book is empty is usually the last job's answer: a first analysis that ran
       // with an older detector, or a re-analysis that failed. Showing it turns a dead end
       // into something the user can act on.
@@ -213,42 +219,47 @@ export default function VocabularyPage() {
               <div className="flex justify-center py-10"><Spinner className="h-6 w-6 text-brand-500" /></div>
             ) : (
               <div className="space-y-5">
-                {struct.lessons.map((l) => {
-                  // Words whose page no lesson covers (a scanned book often has no lessons
-                  // at all) carry lesson_id = null. The API groups them into a pseudo-list;
-                  // without this they were fetched and then silently never rendered.
-                  const lessonWords = l.id === "unassigned"
-                    ? words.filter((w) => !w.lesson_id)
-                    : words.filter((w) => w.lesson_id === l.id);
+                {(units ?? []).map((u) => {
                   const normalizedQuery = query.trim().toLocaleLowerCase();
-                  const lw = normalizedQuery
-                    ? lessonWords.filter((w) => `${w.term} ${w.translation_uz} ${w.definition_en}`.toLocaleLowerCase().includes(normalizedQuery))
-                    : lessonWords;
-                  if (lw.length === 0) return null;
-                  const lp = struct.lessons_progress[l.id];
-                  const expanded = !!expandedLessons[l.id] || !!normalizedQuery;
-                  const visibleWords = expanded ? lw : lw.slice(0, 12);
+                  const uw = normalizedQuery
+                    ? u.entries.filter((w) => `${w.word} ${w.translation_uz} ${w.definition}`
+                        .toLocaleLowerCase().includes(normalizedQuery))
+                    : u.entries;
+                  if (uw.length === 0) return null;
+                  // Group key for expand state and for the lesson gate, which is keyed by lesson.
+                  const key = u.lesson_id ?? `unit:${u.unit}:${u.page_start}`;
+                  const lp = u.lesson_id ? struct.lessons_progress[u.lesson_id] : undefined;
+                  const expanded = !!expandedLessons[key] || !!normalizedQuery;
+                  const visibleWords = expanded ? uw : uw.slice(0, 12);
                   return (
-                    <Card key={l.id}>
+                    <Card key={key}>
                       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                         <div>
-                          <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{l.title}</h3>
-                          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{lw.length} so'z · {l.page_start}-{l.page_end} bet</p>
+                          <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+                            {u.unit ? `${u.unit}-unit · ` : ""}{u.title}
+                          </h3>
+                          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                            {uw.length} so&apos;z
+                            {u.page_start ? ` · ${u.page_start}-${u.page_end} bet` : ""}
+                          </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          {lp && !lp.vocab_gate_passed && lp.has_vocabulary && <Badge tone="amber">Test o'tilmagan</Badge>}
-                          {lp?.vocab_gate_passed && lp.has_vocabulary && <Badge tone="green">✓ Test o'tilgan</Badge>}
-                          <Button size="sm" variant={lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "primary" : "secondary"}
-                            loading={starting} disabled={!lessonWords.some((w) => !w.needs_translation)} onClick={() => startReview(l.id)}>
-                            {lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "🔑 Gatetestni topshirish" : "Test"}
-                          </Button>
+                          {lp && !lp.vocab_gate_passed && lp.has_vocabulary && <Badge tone="amber">Test o&apos;tilmagan</Badge>}
+                          {lp?.vocab_gate_passed && lp.has_vocabulary && <Badge tone="green">✓ Test o&apos;tilgan</Badge>}
+                          {u.lesson_id && (
+                            <Button size="sm" variant={lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "primary" : "secondary"}
+                              loading={starting} disabled={!uw.some((w) => !w.needs_translation)}
+                              onClick={() => startReview(u.lesson_id!)}>
+                              {lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "🔑 Gatetestni topshirish" : "Test"}
+                            </Button>
+                          )}
                         </div>
                       </div>
                       <div className="grid gap-3 md:grid-cols-2">
                         {visibleWords.map((w) => (
                           <div key={w.id} className="min-w-0 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-700">
                             <div className="flex flex-wrap items-start justify-between gap-2">
-                              <span className="break-words text-lg font-semibold leading-7 text-slate-900 dark:text-slate-100">{w.term}</span>
+                              <span className="break-words text-lg font-semibold leading-7 text-slate-900 dark:text-slate-100">{w.word}</span>
                               {w.part_of_speech && <Badge>{w.part_of_speech}</Badge>}
                             </div>
                             <p className="mt-1 break-words text-base leading-7 text-slate-600 dark:text-slate-300">
@@ -256,20 +267,20 @@ export default function VocabularyPage() {
                             </p>
                             {/* The illustration is cropped from the original PDF, so it stays sharp. */}
                             {w.picture_page && w.picture_bbox && (
-                              <VocabPicture bookId={selected} wordId={w.id} term={w.term} />
+                              <VocabPicture bookId={selected} wordId={w.id} term={w.word} />
                             )}
-                            {w.definition_en && <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{w.definition_en}</p>}
-                            {w.example_sentence && <p className="mt-1 break-words text-sm italic leading-6 text-slate-500 dark:text-slate-400">{w.example_sentence}</p>}
+                            {w.definition && <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{w.definition}</p>}
+                            {w.example && <p className="mt-1 break-words text-sm italic leading-6 text-slate-500 dark:text-slate-400">{w.example}</p>}
                           </div>
                         ))}
                       </div>
-                      {lw.length > 12 && !normalizedQuery && (
+                      {uw.length > 12 && !normalizedQuery && (
                         <button
                           type="button"
-                          onClick={() => setExpandedLessons((old) => ({ ...old, [l.id]: !expanded }))}
+                          onClick={() => setExpandedLessons((old) => ({ ...old, [key]: !expanded }))}
                           className="mt-4 rounded-lg px-3 py-2 text-base font-medium text-brand-700 hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-brand-300 dark:hover:bg-brand-900/30"
                         >
-                          {expanded ? "Kamroq ko'rsatish" : `Barcha ${lw.length} ta so'zni ko'rish`}
+                          {expanded ? "Kamroq ko'rsatish" : `Barcha ${uw.length} ta so'zni ko'rish`}
                         </button>
                       )}
                     </Card>

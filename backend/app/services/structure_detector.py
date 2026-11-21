@@ -10,9 +10,12 @@ Design rules:
 - Anything ambiguous is kept but flagged with needs_review / warnings.
 """
 import difflib
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+log = logging.getLogger("lingora.structure")
 
 BLANK_RE = re.compile(r"_{2,}|\.{4,}|\[\s*\]|…{1,}")
 NUM_ITEM_RE = re.compile(r"^(\d{1,3})\s*[\.\)\:]\s*(.+)$")
@@ -270,6 +273,25 @@ def _union_bbox(bboxes: list[list[float]]) -> list[float] | None:
     return [round(min(xs0), 2), round(min(ys0), 2), round(max(xs1), 2), round(max(ys1), 2)]
 
 
+def _log_vocabulary_summary(pages: list[dict[str, Any]], structure: DetectedStructure) -> None:
+    """Make the vocabulary outcome explainable: how many words, from which pages, why none.
+
+    "No vocabulary" alone cannot be acted on. This one line says whether the book has no
+    word list at all or whether word lists exist but were not parsed, and prints the pages
+    that look like lists (>= 4 pronunciation/part-of-speech lines) so the gap is visible.
+    """
+    found = len(structure.vocabulary)
+    list_pages = [page["page_number"] for page in pages
+                  if not _is_not_word_list_page(page["lines"])
+                  and sum(1 for line in page["lines"] if _dictionary_entry(line, {})) >= 4]
+    log.info("structure: %s pages, %s words, %s lessons; word-list-shaped pages: %s",
+             len(pages), found, len(structure.lessons),
+             (list_pages[:12] if list_pages else "none"))
+    if list_pages and found < len(list_pages) * 4:
+        log.warning("structure: %s word-list pages but only %s words parsed — headword "
+                    "grammar is not matching this book's layout", len(list_pages), found)
+
+
 def _detect_vocabulary(pages: list[dict[str, Any]], structure: DetectedStructure,
                        occupied_pages: set[int]) -> None:
     for page in pages:
@@ -299,6 +321,10 @@ def _detect_vocabulary(pages: list[dict[str, Any]], structure: DetectedStructure
 # Dictionary-style entry head: "afraid [afreid] adj.", "agree v.", "bottom n."
 # The part of speech must close the line; a definition on the same line is not
 # expected on picture-dictionary pages and made ordinary sentences match.
+# Single letters a scanner routinely swaps for a part-of-speech abbreviation. "hide
+# [haid] y." is a verb; without this the word is stored with no grammar at all, which the
+# vocabulary screen then shows as a blank badge.
+_POS_OCR_CONFUSIONS = {"y": "v", "u": "v", "w": "v"}
 _POS_LABELS = {"n": "noun", "v": "verb", "adj": "adjective", "adv": "adverb",
                "prep": "preposition", "pron": "pronoun", "conj": "conjunction",
                "num": "numeral", "art": "article", "interj": "interjection", "phr": "phrase"}
@@ -486,11 +512,24 @@ def _split_head_tokens(tokens: list[str]) -> tuple[str, str] | None:
         rest = tokens[size:]
         pos = ""
         if rest and _PRON_RE.search(rest[0]):
+            pron = rest[0]
+            # A pronunciation whose closing bracket was lost (OCR, or a tight layout)
+            # swallows the part of speech: "angry [sengro adj.". The words are still
+            # right, so read the label back out instead of dropping it silently — the
+            # entry keeps its part of speech and the book stays readable.
+            tail = pron.split()[-1].lower().rstrip(".,;:*/^*\"")
+            tail = _POS_OCR_CONFUSIONS.get(tail, tail)
+            # An unclosed bracket is not required: a scan often closes it into a glyph
+            # ("corner [ko:rner\ n."), and the label is still the last word of the token.
+            if len(pron.split()) > 1 and tail in _POS_LABELS and (
+                    pron.count("[") > pron.count("]") or "[" in pron):
+                pos = tail
             rest = rest[1:]
         if rest:
             if len(rest) != 1:
                 continue
             pos = rest[0].lower().rstrip(".,;:*/^*\"")
+            pos = _POS_OCR_CONFUSIONS.get(pos, pos)
             if pos not in _POS_LABELS:
                 continue
         return " ".join(head), pos
@@ -574,6 +613,11 @@ def _dictionary_entry(line: dict[str, Any], targets: dict[str, str] | None = Non
         text, term, pos = readings[0]
     else:
         text, term, pos = best
+    # Both readings are guesses when the book's own index knows neither, and they disagree
+    # about the word itself ("publish" vs "ublish"): the line is too damaged to trust, and
+    # a wrong headword is worse than a missing one.
+    if word_index and best_score == 0 and len({reading[1] for reading in readings}) > 1:
+        return None
     if not term:
         # The part of speech is sometimes destroyed by OCR ("hide [haid] y.",
         # "c reply [npiao *", "r real irf»n adj."). Such a line is only accepted when it
@@ -623,6 +667,22 @@ def _dictionary_entry(line: dict[str, Any], targets: dict[str, str] | None = Non
         return None
     return {"term": _clean_term(term), "part_of_speech": _POS_LABELS.get(pos, ""),
             "definition": "", "bbox": line.get("bbox")}
+
+
+def _looks_like_sentence(text: str) -> bool:
+    """True for real prose, not for a glyph run or a leftover illustration fragment.
+
+    A definition or example is a sentence: several plain words, at least one lower-case
+    letter, and mostly letters. "1* ^ '" and "I iffm&" are what a scan leaves behind.
+    """
+    text = (text or "").strip()
+    if len(text) < 8:
+        return False
+    letters = sum(1 for char in text if char.isalpha())
+    if letters / max(1, len(text)) < 0.6:
+        return False
+    words = [w for w in text.split() if sum(c.isalpha() for c in w) >= 2]
+    return len(words) >= 3 and any(c.islower() for c in text)
 
 
 def _entry_key(term: str) -> str:
@@ -687,6 +747,13 @@ def _detect_dictionary_entries(pages: list[dict[str, Any]], structure: DetectedS
         # four of those is a word list, and only then may bare headword lines count too.
         strong = [line for line in page["lines"] if _dictionary_entry(line, scoped)]
         if len(strong) < 4:
+            # A word-list page that yields 0-3 headwords is the interesting case: the
+            # page IS a list but the headword grammar did not match it. Log the raw lines
+            # once so the reason is visible instead of "no vocabulary found".
+            if strong:
+                log.info("page %s: only %s headword lines (%s); page skipped",
+                         page["page_number"], len(strong),
+                         "; ".join(repr(item["text"][:60]) for item in strong[:3]))
             continue
         entries: list[tuple[dict[str, Any], dict[str, str]]] = []
         for line in page["lines"]:
@@ -725,15 +792,30 @@ def _detect_dictionary_entries(pages: list[dict[str, Any]], structure: DetectedS
                     and other["text"].strip() and not _dictionary_entry(other, word_index)
                     and not _page_noise(other["text"])]
             definition = ""
+            # A definition never starts with a bullet: on pages where the scan glued an
+            # illustration (or its glyph) into the text layer, the first "long enough"
+            # line is that garbage, not the sentence. Skip bullets, stray glyph runs and
+            # anything without a lower-case letter before falling back to a raw line.
+            ordered = [t for t in body if _looks_like_sentence(t[0])] + \
+                      [t for t in body if not _looks_like_sentence(t[0])]
+            body = ordered
             for text, _ in body:
                 if len(text) >= 3 and not text.startswith(("—", "-", "–")):
                     definition = text[:2000]
                     break
             example = ""
-            for text, box in body:
-                if text is not definition and (text.startswith(("—", "-", "–", "►", "*")) or box[0] > line["bbox"][0] + 20):
-                    example = text.lstrip("—–-►*·• ")[:500]
-                    break
+            candidates = [t for t in body if t[0] != definition]
+            # The example is marked by a bullet on its own line, or sits in an indented
+            # column. Prefer a bullet-marked line: an indented line can just be the tail of
+            # a definition that wrapped onto the next line.
+            candidates.sort(key=lambda item: 0 if item[0].startswith(("—", "-", "–", "►", "*", "•"))
+                            else (1 if item[1][0] > line["bbox"][0] + 20 else 2))
+            for text, box in candidates:
+                if text.startswith(("—", "-", "–", "►", "*", "•")) or box[0] > line["bbox"][0] + 20:
+                    cleaned = text.lstrip("—–-►*·• ").strip()
+                    if cleaned and _looks_like_sentence(cleaned):
+                        example = cleaned[:500]
+                        break
             picture = _entry_picture(page, line, body, start_y, end_y, page_width, page_height)
             key = _entry_key(entry["term"])
             # A word appears once in the book; a repeated line on the next page (running
@@ -938,6 +1020,7 @@ def detect_structure(pages: list[dict[str, Any]]) -> DetectedStructure:
     # same headwords from their definition lines.
     _detect_dictionary_entries(pages, structure, targets, unit_words if structure.layout == "dictionary" else None)
     _detect_vocabulary(pages, structure, {ex.page_number for ex in structure.exercises})
+    _log_vocabulary_summary(pages, structure)
     _detect_answer_keys(pages, structure)
     _attach_answer_keys(structure)
     _finish_structure(structure)

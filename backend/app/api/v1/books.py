@@ -5,7 +5,7 @@ import math
 import uuid
 from datetime import timedelta
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -32,7 +32,7 @@ from app.models import (
     User,
     VocabularyWord,
 )
-from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionVocabularyIn, VisionMapPreviewIn, VisionTopicPreviewIn
+from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionVocabularyBatchIn, VisionVocabularyIn, VisionMapPreviewIn, VisionTopicPreviewIn
 from app.services.pdf_extractor import ocr_available, validate_and_open
 from app.services.storage import get_storage, SupabaseStorage, DIRECT_UPLOAD_FILENAME, direct_upload_token_active
 from app.services.tasks import enqueue_book_analysis
@@ -591,6 +591,72 @@ def _vocabulary_page(db: Session, book, page_number: int, data: VisionVocabulary
     return page
 
 
+# One batch = one serverless request = one bounded set of paid model calls. A page takes
+# a few seconds, so 10 keeps a request well inside a Vercel function's limit while still
+# covering a whole unit pair (20-40 words) per call.
+VISION_VOCABULARY_BATCH = 10
+
+
+@router.post("/{book_id}/vision-vocabulary/batch")
+def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, request: Request,
+                                db: Session = Depends(get_db),
+                                user: User = Depends(get_current_user)):
+    """Read the next N pending pages in one request; report per page, never abort on one.
+
+    Serverless deployments cannot run a whole-book scan inside one invocation, so the
+    client calls this repeatedly. A page that is not a word list is reported as skipped and
+    the batch continues; an account-level problem (quota, provider) stops it immediately
+    because every following page would fail the same way.
+    """
+    limit(request, "vision_vocabulary", 300, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if book.status != "ready":
+        raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    from app.services.ai.vision_vocabulary import analyse_page, mark_scanned, pending_pages, save_words
+
+    wanted = data.pages[:VISION_VOCABULARY_BATCH] if data.pages else \
+        pending_pages(db, book, include_text_pages=data.include_text_pages)[:VISION_VOCABULARY_BATCH]
+    results: list[dict[str, Any]] = []
+    added_total = 0
+    stop = False
+    for page_number in wanted:
+        if stop:
+            results.append({"page": page_number, "status": "skipped",
+                            "reason": "batch stopped by a previous error", "words_added": 0})
+            continue
+        try:
+            result, _provider, _model = analyse_page(db, user.id, book, page_number)
+            if not result.is_word_list:
+                mark_scanned(db, book, page_number)
+                results.append({"page": page_number, "status": "not_a_word_list",
+                                "unit": result.unit, "words_added": 0})
+                continue
+            saved = save_words(db, book, page_number, result)
+            mark_scanned(db, book, page_number)
+            added_total += saved["words_added"]
+            results.append({"page": page_number, "status": "ok", "unit": result.unit,
+                            "words_found": saved["words_found"],
+                            "words_added": saved["words_added"],
+                            "entries": [w.term for w in result.words]})
+        except ApiError as exc:
+            # Quota / provider / configuration problems affect every page: stop the batch.
+            results.append({"page": page_number, "status": "error", "code": exc.code,
+                            "message": exc.message_uz, "words_added": 0})
+            if exc.http_status >= 429 or exc.code in ("AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED",
+                                                      "AI_PROVIDER_REJECTED", "AI_BAD_OUTPUT"):
+                stop = True
+        except Exception as exc:  # noqa: BLE001 - one bad page must not lose the batch
+            log.warning("vision vocabulary batch: page %s failed: %s", page_number, exc)
+            db.rollback()
+            results.append({"page": page_number, "status": "error", "code": "PAGE_FAILED",
+                            "message": "Sahifa o'qilmadi.", "words_added": 0})
+    remaining = len(pending_pages(db, book, include_text_pages=data.include_text_pages))
+    return {"book_id": book.id, "processed": len(results), "words_added": added_total,
+            "remaining_pages": remaining, "stopped": stop, "results": results}
+
+
 @router.get("/{book_id}/vision-vocabulary/pending")
 def vision_vocabulary_pending(book_id: str, include_text_pages: bool = False,
                               db: Session = Depends(get_db),
@@ -608,6 +674,10 @@ def vision_vocabulary_pending(book_id: str, include_text_pages: bool = False,
     pages = pending_pages(db, book, include_text_pages=include_text_pages)
     return {"pages": pages, "total_pages": book.page_count,
             "include_text_pages": include_text_pages,
+            # A serverless request cannot run 196 paid model calls; the client walks the
+            # list in bounded batches, which is why the plan is reported up front.
+            "batch_size": VISION_VOCABULARY_BATCH,
+            "batches": (len(pages) + VISION_VOCABULARY_BATCH - 1) // VISION_VOCABULARY_BATCH,
             "consent_required": True}
 
 
@@ -621,9 +691,10 @@ def preview_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabu
     from app.services.ai.vision_vocabulary import analyse_page, words_as_preview
 
     result, provider, model = analyse_page(db, user.id, book, page_number)
-    return {"page_number": page_number, "provider": provider, "model": model,
-            "is_word_list": result.is_word_list, "heading": result.heading,
-            "words": words_as_preview(result), "warnings": result.warnings, "saved": False}
+    return {"page": page_number, "page_number": page_number, "provider": provider,
+            "model": model, "unit": result.unit, "is_word_list": result.is_word_list,
+            "heading": result.heading, "entries": words_as_preview(result, page_number),
+            "warnings": result.warnings, "saved": False}
 
 
 @router.post("/{book_id}/vision-vocabulary/pages/{page_number}")
@@ -635,9 +706,11 @@ def save_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabular
     # Serialize with other imports for the same book on PostgreSQL.
     db.scalar(select(Book).where(Book.id == book.id).with_for_update())
     _vocabulary_page(db, book, page_number, data)
-    from app.services.ai.vision_vocabulary import analyse_page, save_words, words_as_preview
+    from app.services.ai.vision_vocabulary import (analyse_page, mark_scanned, save_words,
+                                                   words_as_preview)
 
     result, provider, model = analyse_page(db, user.id, book, page_number)
+    mark_scanned(db, book, page_number)
     if not result.is_word_list:
         # Nothing is written when the page is not a word list: an empty Lug'at stays honest.
         raise ApiError("NOT_A_WORD_LIST",
@@ -646,9 +719,10 @@ def save_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabular
     saved = save_words(db, book, page_number, result)
     if saved["words_found"] == 0:
         raise ApiError("NO_WORDS_FOUND", "Sahifadan so'z ajratilmadi; hech narsa saqlanmadi.", 422)
-    return {"page_number": page_number, "provider": provider, "model": model,
-            "heading": result.heading, "warnings": result.warnings,
-            "words": words_as_preview(result), "saved": True, **saved}
+    return {"page": page_number, "page_number": page_number, "provider": provider,
+            "model": model, "unit": result.unit, "heading": result.heading,
+            "warnings": result.warnings, "entries": words_as_preview(result, page_number),
+            "saved": True, **saved}
 
 
 @router.get("/{book_id}/ocr/pending")

@@ -40,9 +40,12 @@ async def lifespan(app: FastAPI):
 
     if os.environ.get("VERCEL") or settings.auto_schema_upgrade:
         from app.db.schema_upgrade import ensure_schema
+        from app.db.session import schema_engine
 
         try:
-            ensure_schema(engine)
+            # A dedicated unpooled engine: schema DDL must run on one connection, and the
+            # advisory lock is only meaningful on a direct (non-pooler) session.
+            ensure_schema(schema_engine())
         except Exception:
             # A missing column must surface as a clear API error, not a dead cold start.
             log.exception("Automatic schema upgrade failed")

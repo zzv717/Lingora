@@ -75,4 +75,4 @@ def test_stamping_records_the_alembic_head(tmp_path, monkeypatch):
     assert "vocabulary_words.picture_page" in added
     with engine.connect() as connection:
         stamped = connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-    assert stamped == "c4f7a1b9d2e5", "the schema must be stamped at the newest revision"
+    assert stamped == "d8e2f5a1c734", "the schema must be stamped at the newest revision"

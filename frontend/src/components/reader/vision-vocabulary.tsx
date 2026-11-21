@@ -4,99 +4,114 @@ import { useEffect, useRef, useState } from "react";
 import { ApiErr, get, post } from "@/lib/api";
 import { Button } from "@/components/ui";
 
-type PageResult = { page: number; status: "ok" | "skipped" | "error"; added: number; message: string };
-type Saved = { words_added: number; words_found: number; heading?: string; warnings: string[] };
+type BatchPage = {
+  page: number;
+  status: "ok" | "not_a_word_list" | "skipped" | "error";
+  unit?: string;
+  words_found?: number;
+  words_added?: number;
+  entries?: string[];
+  message?: string;
+};
+type BatchOut = {
+  processed: number;
+  words_added: number;
+  remaining_pages: number;
+  stopped: boolean;
+  results: BatchPage[];
+};
+type Pending = { pages: number[]; batch_size: number; batches: number };
 
-// Errors where scanning the next page cannot succeed either: stop the whole run.
-const STOP_CODES = new Set([
-  "AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED", "AI_FEATURE_QUOTA_EXCEEDED", "AI_QUOTA_EXCEEDED",
-  "AI_TOKEN_QUOTA_EXCEEDED", "AI_PROVIDER_REJECTED", "UNAUTHORIZED", "TOKEN_EXPIRED",
-]);
-// Page-level problems: the page is not a word list or has no readable words. Keep going.
-const SKIP_CODES = new Set(["NOT_A_WORD_LIST", "NO_WORDS_FOUND"]);
-
-/**
- * Reads word lists off SCANNED pages, one page image at a time.
- *
- * A photocopied book has no text layer, so the rule-based detector finds no vocabulary and
- * the Lug'at screen stays empty however often the book is re-analysed. This is the path that
- * actually produces words for such a book; it never translates, never replaces a word and
- * marks everything as reviewable.
- */
 // One click scans at most this many pages: every page is a paid provider call, and a
 // 200-page scan started by a single tap would be a surprise bill, not a repair.
 const PAGES_PER_RUN = 40;
 
+/**
+ * Reads word lists off page images, one bounded batch at a time.
+ *
+ * The rule-based detector cannot describe a word-list layout it has not seen, and a
+ * scanned book has no text layer at all. This path sends the page image to the configured
+ * vision model and stores what the book actually prints. It never translates, never
+ * replaces an existing word and marks every new word for review.
+ *
+ * Pages are read in batches because a serverless request cannot run a whole-book scan;
+ * the server decides the batch size and reports how much is left after each call.
+ */
 export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: () => void }) {
   const [consent, setConsent] = useState(false);
   // Off by default: a scanned book needs only its scanned pages. A book WITH a text layer
   // that still produced no words is the other case — re-analysis re-reads the same layout
   // and changes nothing, so vision has to look at every page instead.
   const [allPages, setAllPages] = useState(false);
-  const [pending, setPending] = useState<number[] | null>(null);
+  const [plan, setPlan] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [current, setCurrent] = useState<number | null>(null);
-  const [results, setResults] = useState<PageResult[]>([]);
+  const [read, setRead] = useState(0);
+  const [results, setResults] = useState<BatchPage[]>([]);
+  const [remaining, setRemaining] = useState(0);
   const [error, setError] = useState("");
   const stopRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
-    get<{ pages: number[] }>(`/books/${bookId}/vision-vocabulary/pending?include_text_pages=${allPages}`)
-      .then((r) => { if (alive) setPending(r.pages); })
-      .catch(() => { if (alive) setPending(null); });
+    get<Pending>(`/books/${bookId}/vision-vocabulary/pending?include_text_pages=${allPages}`)
+      .then((r) => { if (alive) { setPlan(r); setRemaining(r.pages.length); } })
+      .catch(() => { if (alive) setPlan(null); });
     return () => { alive = false; };
   }, [bookId, allPages]);
 
   async function run() {
     if (!consent || busy) return;
-    setBusy(true); setError(""); setResults([]); stopRef.current = false;
+    setBusy(true); setError(""); setResults([]); setRead(0); stopRef.current = false;
+    let readSoFar = 0;
     try {
-      const { pages } = await get<{ pages: number[] }>(
-        `/books/${bookId}/vision-vocabulary/pending?include_text_pages=${allPages}`);
-      setPending(pages);
-      if (!pages.length) {
-        setError("Skanerlangan sahifa qolmagan — lug'atni boshqa yo'l bilan to'ldirish kerak.");
-        return;
-      }
-      for (const page of pages.slice(0, PAGES_PER_RUN)) {
-        if (stopRef.current) break;
-        setCurrent(page);
-        try {
-          const r = await post<Saved>(`/books/${bookId}/vision-vocabulary/pages/${page}`,
-            { consent_images_to_provider: true });
-          setResults((prev) => [...prev, {
-            page, status: "ok", added: r.words_added,
-            message: r.words_added ? `${r.words_added} ta yangi so'z` : "yangi so'z qo'shilmadi",
-          }]);
-        } catch (e) {
-          const err = e instanceof ApiErr ? e : null;
-          const message = err?.message ?? (e instanceof Error ? e.message : "Noma'lum xato");
-          const status = err && SKIP_CODES.has(err.code) ? "skipped" : "error";
-          setResults((prev) => [...prev, { page, status, added: 0, message }]);
-          if (err && STOP_CODES.has(err.code)) { setError(message); break; }
+      while (!stopRef.current && readSoFar < PAGES_PER_RUN) {
+        // Empty page list = "read the next pending pages"; the server owns the batch size.
+        const out = await post<BatchOut>(`/books/${bookId}/vision-vocabulary/batch`,
+          { consent_images_to_provider: true, include_text_pages: allPages, pages: [] });
+        readSoFar += out.processed;
+        setRead(readSoFar);
+        setRemaining(out.remaining_pages);
+        setResults((prev) => [...prev, ...out.results]);
+        const last = out.results[out.results.length - 1];
+        setCurrent(last ? last.page : null);
+        if (out.stopped) {
+          const failed = out.results.find((r) => r.status === "error");
+          setError(failed?.message ?? "Skanerlash to'xtatildi.");
+          break;
         }
+        if (!out.processed || !out.remaining_pages) break;   // nothing left to read
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Skanerlash boshlanmadi.");
+      const err = e instanceof ApiErr ? e : null;
+      setError(err?.message ?? (e instanceof Error ? e.message : "Skanerlash boshlanmadi."));
     } finally {
       setBusy(false); setCurrent(null); onDone?.();
     }
   }
 
-  const added = results.reduce((n, r) => n + r.added, 0);
+  const added = results.reduce((n, r) => n + (r.words_added ?? 0), 0);
   const failed = results.filter((r) => r.status === "error");
-  // What is left AFTER this run, so the button can promise a bounded next step.
-  const remaining = Math.max(0, (pending?.length ?? 0) - results.length);
+  const skipped = results.filter((r) => r.status === "not_a_word_list");
+
+  function line(r: BatchPage) {
+    if (r.status === "error") return r.message ?? "Sahifa o'qilmadi";
+    if (r.status === "not_a_word_list") return "lug'at sahifasi emas";
+    if (r.status === "skipped") return r.message ?? "o'tkazib yuborildi";
+    const unit = r.unit ? `${r.unit}-unit · ` : "";
+    return `${unit}${r.words_added ?? 0} ta yangi so'z`;
+  }
 
   return (
     <div className="mt-3 space-y-2">
-      {pending && (
+      {plan && (
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          {pending.length
-            ? `${pending.length} sahifa skanerlangan (matn qatlamisiz). Bir bosishda ko'pi bilan `
-              + `${PAGES_PER_RUN} sahifa o'qiladi — har bir sahifa AI chaqiruvi hisoblanadi.`
-            : "Skanerlangan sahifa yo'q — kitob matnli, lug'at tahlildan kelishi kerak."}
+          {remaining
+            ? `${remaining} sahifa o'qilishi kerak. Har bir sahifa AI chaqiruvi hisoblanadi; `
+              + `bir bosishda ko'pi bilan ${PAGES_PER_RUN} sahifa o'qiladi.`
+            : results.length
+              ? "Barcha kerakli sahifa o'qildi."
+              : "O'qilishi kerak bo'lgan sahifa yo'q — lug'at allaqachon to'plangan."}
         </p>
       )}
       <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
@@ -115,8 +130,11 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
       </label>
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" loading={busy} disabled={!consent || !remaining} onClick={run}>
-          {busy ? `O'qilmoqda: ${current ?? "..."} (${results.length}/${Math.min(PAGES_PER_RUN, pending?.length ?? 0)})`
-            : remaining ? `Lug'atni Vision bilan o'qish (${Math.min(PAGES_PER_RUN, remaining)} sahifa)` : "Hamma sahifa o'qildi"}
+          {busy
+            ? `O'qilmoqda: ${current ?? "..."} (${read}/${Math.min(PAGES_PER_RUN, remaining + read)})`
+            : remaining
+              ? `Lug'atni o'qish (${Math.min(PAGES_PER_RUN, remaining)} sahifa)`
+              : "Hamma sahifa o'qildi"}
         </Button>
         {busy && <Button variant="ghost" onClick={() => { stopRef.current = true; }}>To'xtatish</Button>}
       </div>
@@ -125,12 +143,14 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         <div className="rounded-lg bg-slate-100 p-3 text-xs dark:bg-slate-800" role="status">
           <p className="font-medium">
             Jami {added} ta so'z qo'shildi · {results.length} sahifa o'qildi
+            {skipped.length ? ` · ${skipped.length} sahifa lug'at emas` : ""}
             {failed.length ? ` · ${failed.length} ta xato` : ""}
           </p>
           <ul className="mt-2 max-h-40 space-y-1 overflow-auto">
             {results.map((r) => (
               <li key={r.page} className={r.status === "error" ? "text-red-700 dark:text-red-300" : ""}>
-                {r.page}-sahifa: {r.message}
+                {r.page}-sahifa: {line(r)}
+                {r.status === "ok" && r.entries?.length ? ` — ${r.entries.slice(0, 3).join(", ")}` : ""}
               </li>
             ))}
           </ul>

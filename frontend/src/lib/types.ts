@@ -189,6 +189,29 @@ export interface VocabWord {
   picture_bbox?: number[] | null;
 }
 
+/** One unit of a vocabulary book, as the extractor stored it. */
+export interface VocabUnit {
+  unit: string;
+  title: string;
+  lesson_id: string | null;
+  page_start: number | null;
+  page_end: number | null;
+  count: number;
+  entries: {
+    id: string;
+    word: string;
+    part_of_speech: string;
+    definition: string;
+    example: string;
+    translation_uz: string;
+    page: number;
+    source: string;
+    needs_translation: boolean;
+    picture_page: number | null;
+    picture_bbox: number[] | null;
+  }[];
+}
+
 export interface VocabItem {
   item_id: string;
   word_id: string;

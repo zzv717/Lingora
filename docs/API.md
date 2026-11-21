@@ -63,3 +63,21 @@ Xatolar yagona formatda: `{"error": {"code", "message_uz", "details"}}`.
 | POST | `/progress/heartbeat` | o'qish vaqti |
 | POST | `/revision/sessions` | aqlli takrorlash seansi (zaif mavzular + due so'zlar) |
 | GET | `/me/plan` · `/ai/status` · `/health` | reja, AI holati, health |
+
+## Vocabulary extraction
+
+`GET /books/{id}/vocabulary/units` — stored words grouped by unit
+(`{book_id, total, units: [{unit, title, lesson_id, page_start, page_end, count, entries}]}`).
+Words with no unit are returned last instead of being dropped.
+
+`GET  /books/{id}/vision-vocabulary/pending` — `{pages, total_pages, batch_size, batches,
+include_text_pages, consent_required}`; already-read pages are excluded.
+
+`POST /books/{id}/vision-vocabulary/pages/{page}` — read one page with the vision model
+(`{consent_images_to_provider}`); returns
+`{page, unit, is_word_list, entries: [{word, part_of_speech, definition, example, bbox, confidence}], saved}`.
+
+`POST /books/{id}/vision-vocabulary/batch` — `{consent_images_to_provider, pages?,
+include_text_pages?}`; reads at most 10 pages and returns
+`{processed, words_added, remaining_pages, stopped, results: [{page, status, unit, words_added, entries}]}`.
+Call it repeatedly to walk a whole book; `stopped` means the error would repeat on every page.
