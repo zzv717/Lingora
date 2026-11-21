@@ -276,6 +276,23 @@ class VocabWordOut(BaseModel):
     picture_bbox: Optional[list[float]] = None
 
 
+class VocabWordUpdateIn(BaseModel):
+    """Partial update of one extracted entry. Only the sent fields change."""
+    word: Optional[str] = None
+    part_of_speech: Optional[str] = None
+    definition: Optional[str] = None
+    example: Optional[str] = None
+    translation_uz: Optional[str] = None
+    unit_id: Optional[str] = None
+    position: Optional[int] = None
+
+
+class VocabUnitUpdateIn(BaseModel):
+    title: Optional[str] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+
+
 class VocabSessionItemOut(BaseModel):
     item_id: str
     word_id: str
@@ -446,6 +463,9 @@ class VisionVocabularyBatchIn(BaseModel):
     consent_images_to_provider: bool
     pages: list[int] = []
     include_text_pages: bool = False
+    # Re-extraction must not accumulate duplicates, so the first batch of a fresh run
+    # clears the book's previous machine extraction (human edits are kept).
+    replace_existing: bool = False
 
 
 class VisionTopicPreviewIn(VisionMapPreviewIn):

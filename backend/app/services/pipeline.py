@@ -330,14 +330,15 @@ class Pipeline:
 
     def _vision_vocabulary_fallback(self, book: Book, pages: list[dict[str, Any]],
                                     text_count: int) -> dict[str, Any]:
-        """Read word lists with the vision model when the text parser found (almost) none.
+        """Read the word lists with the vision model when the text parser found (almost) none.
 
-        Returns ``{"words_added", "note_uz", "warnings"}`` and never raises: a vision failure
-        must not turn a readable book into a failed upload. The worklist is bounded by
-        ``vocab_vision_fallback_pages`` because every page is a paid call, and pages already
-        read once (``vocab_scanned_at``) are skipped, so re-analysis does not re-bill.
+        Returns ``{"words_added", "units", "note_uz", "warnings"}`` and never raises: a vision
+        failure must not turn a readable book into a failed upload. The work goes through
+        ``vocab_extract.extract_book`` so units are detected first, each page is read with its
+        unit as context, and the entries are translated — the same three passes the manual
+        "read with AI" buttons use, so the two paths cannot drift apart.
         """
-        result: dict[str, Any] = {"words_added": 0, "note_uz": "", "warnings": []}
+        result: dict[str, Any] = {"words_added": 0, "units": 0, "note_uz": "", "warnings": []}
         minimum = settings.vocab_vision_fallback_min_entries
         if minimum <= 0 or text_count >= minimum:
             return result
@@ -348,11 +349,10 @@ class Pipeline:
             log.info("vocabulary: %s entries from the text layer, vision not configured", text_count)
             return result
         try:
-            from app.services.ai.vision_vocabulary import (analyse_page, mark_scanned,
-                                                           pending_pages, save_words)
+            from app.services import vocab_extract
 
             book.page_count = book.page_count or len(pages)
-            worklist = pending_pages(self.db, book, include_text_pages=True)
+            worklist = vocab_extract.pending_pages(self.db, book, include_text_pages=True)
             if text_count == 0:
                 # Nothing parsed at all: the word lists are somewhere in the book and page
                 # order is the only honest hint left, so keep the whole book in the list.
@@ -361,47 +361,18 @@ class Pipeline:
             if not worklist:
                 return result
 
-            added = 0
-            read = 0
-            for page_number in worklist:
-                try:
-                    parsed, _provider, _model = analyse_page(
-                        self.db, book.user_id, book, page_number,
-                        retries=settings.ai_max_retries)
-                except ApiError as exc:
-                    log.warning("vocabulary fallback: page %s failed (%s)", page_number, exc.code)
-                    result["warnings"].append({
-                        "page": page_number, "code": "VOCABULARY_VISION_PAGE_FAILED",
-                        "message_uz": f"{page_number}-sahifani AI o'qiy olmadi ({exc.code})."})
-                    # An account-level problem will repeat on every page: stop paying for it.
-                    if exc.http_status in (401, 402, 403) or exc.code in (
-                            "AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED",
-                            "AI_QUOTA_EXCEEDED", "AI_FEATURE_QUOTA_EXCEEDED",
-                            "AI_TOKEN_QUOTA_EXCEEDED"):
-                        result["note_uz"] = (
-                            "Matn ajratgich bu kitobdan so'z topa olmadi; AI (vision) ham "
-                            f"javob bermadi: {exc.message_uz}")
-                        break
-                    continue
-                except Exception:  # noqa: BLE001 - never fail the upload over one page
-                    log.warning("vocabulary fallback: page %s crashed", page_number, exc_info=True)
-                    continue
-                read += 1
-                if not parsed.is_word_list or not parsed.words:
-                    mark_scanned(self.db, book, page_number)
-                    continue
-                saved = save_words(self.db, book, page_number, parsed)
-                added += saved["words_added"]
-                mark_scanned(self.db, book, page_number)
-
-            result["words_added"] = added
-            log.info("vocabulary fallback: read %s pages, added %s words (text layer had %s)",
-                     read, added, text_count)
-            if added:
+            report = vocab_extract.extract_book(self.db, book, pages=worklist)
+            result["words_added"] = report["words_added"]
+            result["units"] = report["units"]
+            result["warnings"].extend(report["warnings"])
+            log.info("vocabulary fallback: read %s pages, added %s words in %s units "
+                     "(text layer had %s)", report["pages_read"], report["words_added"],
+                     report["units"], text_count)
+            if report["words_added"]:
                 result["note_uz"] = (
                     f"Kitobning matn qatlamidan {text_count} ta so'z topildi; qolganini AI rasm "
-                    f"orqali o'qidi ({added} ta so'z qo'shildi). Tarjimalar hali yo'q — "
-                    "«tekshirilishi kerak» deb belgilangan.")
+                    f"orqali o'qidi: {report['units']} bo'lim, {report['words_added']} ta so'z, "
+                    f"{report['translated']} tasi o'zbekchaga tarjima qilindi (mashinaviy).")
                 result["warnings"].append({
                     "page": 0, "code": "VOCABULARY_VISION_FALLBACK",
                     "message_uz": result["note_uz"]})

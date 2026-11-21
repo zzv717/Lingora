@@ -289,9 +289,12 @@ def test_the_request_carries_the_strict_json_schema(client, db, monkeypatch):
     client.post(url(book, 1, "/preview"), headers=h, json={"consent_images_to_provider": True})
     schema = provider.calls[0][1].get("json_schema")
     assert schema == VOCABULARY_JSON_SCHEMA
-    assert set(schema["properties"]) == {"is_word_list", "unit", "entries", "warnings"}
+    assert set(schema["properties"]) == {"is_word_list", "unit", "unit_title", "entries", "warnings"}
     entry = schema["properties"]["entries"]["items"]
-    assert set(entry["properties"]) == {"word", "part_of_speech", "definition", "example", "bbox"}
+    # ``order_in_page`` keeps the book's own reading order (two-column pages included);
+    # ``bbox`` is what the illustration crop of a word needs.
+    assert set(entry["properties"]) == {"word", "part_of_speech", "definition", "example",
+                                        "order_in_page", "bbox"}
     # Strict mode rejects optional properties, so every key must be required.
     assert set(entry["required"]) == set(entry["properties"])
     assert provider.calls[0][1].get("json_mode") is True
@@ -437,8 +440,8 @@ def test_a_dropped_database_connection_does_not_lose_the_paid_page(client, db, m
     r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
                     json={"consent_images_to_provider": True, "pages": [1]})
     assert r.status_code == 200, r.text
-    body = r.json()["results"][0]
-    assert body["status"] == "ok" and body.get("retried") is True
+    body = r.json()
+    assert body["results"][0]["status"] == "ok" and body["stamp_retried"] is True
     db.expire_all()
     assert db.scalar(select(func.count(VocabularyWord.id))
                      .where(VocabularyWord.book_id == book, VocabularyWord.term == "afraid")) == 1

@@ -4,6 +4,9 @@ The production incident these tests cover: the code queried
 ``vocabulary_words.picture_page`` against a database that only had the previous
 schema, so opening the vocabulary page answered 500 "column does not exist".
 """
+import re
+from pathlib import Path
+
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
@@ -67,7 +70,7 @@ def test_ensure_schema_is_additive_only(tmp_path):
 def test_stamping_records_the_alembic_head(tmp_path, monkeypatch):
     """After an automatic upgrade, a later `alembic upgrade head` must not re-add columns."""
     engine = _engine(tmp_path)
-    monkeypatch.chdir(__import__("pathlib").Path(__file__).resolve().parents[1])
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
     with engine.begin() as connection:
         connection.execute(sa.text(
             "CREATE TABLE vocabulary_words (id VARCHAR(36) PRIMARY KEY, term VARCHAR(255))"))
@@ -75,4 +78,18 @@ def test_stamping_records_the_alembic_head(tmp_path, monkeypatch):
     assert "vocabulary_words.picture_page" in added
     with engine.connect() as connection:
         stamped = connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-    assert stamped == "e4b7c2d90a15", "the schema must be stamped at the newest revision"
+    # The head moves whenever a migration is added; the point of the test is that the stamp
+    # follows it, not the literal revision id of one particular migration.
+    revisions, parents = set(), set()
+    for path in (Path(__file__).resolve().parents[1] / "alembic" / "versions").glob("*.py"):
+        text = path.read_text()
+        revision = re.search(r'^revision\s*=\s*[\'"]([^\'"]+)[\'"]', text, re.M)
+        parent = re.search(r'^down_revision\s*=\s*[\'"]?([^\'"\n]+?)[\'"]?\s*$', text, re.M)
+        if revision:
+            revisions.add(revision.group(1))
+        if parent and parent.group(1) != "None":
+            parents.add(parent.group(1))
+    tip = sorted(revisions - parents)
+    assert tip, "the migration graph has no head"
+    assert len(tip) == 1, f"the migration graph must have one head, found {tip}"
+    assert stamped == tip[0], f"the schema must be stamped at the newest revision ({tip})"

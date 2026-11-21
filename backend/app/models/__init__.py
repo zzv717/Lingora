@@ -12,7 +12,8 @@ from app.models.vision_region import (
     VisionPageRegionCache,
     VisionRegionCorrection,
 )
-from app.models.vocab import VocabularyAttempt, VocabularyProgress, VocabularySession, VocabularyWord
+from app.models.vocab import (VocabularyAttempt, VocabularyProgress, VocabularySession,
+                             VocabularyUnit, VocabularyWord)
 from app.models.progress import (
     ActivityDay,
     AIConversation,
@@ -27,7 +28,7 @@ __all__ = [
     "User", "Profile", "RefreshToken", "PasswordReset", "Subscription",
     "Book", "BookPage", "Chapter", "Lesson", "ProcessingJob", "AnswerKey",
     "Exercise", "ExerciseQuestion", "ExerciseOption", "StudentAnswer", "ExerciseAttempt",
-    "VocabularyWord", "VocabularySession", "VocabularyAttempt", "VocabularyProgress",
+    "VocabularyWord", "VocabularyUnit", "VocabularySession", "VocabularyAttempt", "VocabularyProgress",
     "LearningProgress", "ActivityDay", "RevisionSession", "RevisionItem",
     "AIConversation", "AIMessage", "UsageEvent",
     "VisionExerciseRegion", "VisionPageRegionCache", "VisionRegionCorrection",

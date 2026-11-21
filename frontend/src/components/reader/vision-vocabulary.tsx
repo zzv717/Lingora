@@ -7,18 +7,25 @@ import { Button } from "@/components/ui";
 type BatchPage = {
   page: number;
   status: "ok" | "not_a_word_list" | "skipped" | "deferred" | "error";
-  unit?: string;
+  unit?: string | null;
   words_found?: number;
   words_added?: number;
-  entries?: string[];
+  rejected?: { word: string; reason: string }[];
+  duplicates?: { word: string; reason: string }[];
   message?: string;
+  reason?: string;
 };
 type BatchOut = {
   processed: number;
   words_added: number;
+  translated: number;
+  rejected: number;
+  duplicates: number;
+  units_detected: number;
   remaining_pages: number;
   stopped: boolean;
   results: BatchPage[];
+  warnings?: { message_uz: string }[];
 };
 type Pending = { pages: number[]; batch_size: number; batches: number };
 
@@ -31,8 +38,10 @@ const PAGES_PER_RUN = 40;
  *
  * The rule-based detector cannot describe a word-list layout it has not seen, and a
  * scanned book has no text layer at all. This path sends the page image to the configured
- * vision model and stores what the book actually prints. It never translates, never
- * replaces an existing word and marks every new word for review.
+ * vision model and stores what the book actually prints: first the unit headings of the
+ * whole book (so a unit has a real title and a real page range), then the words of each
+ * page with its unit as context, then an Uzbek translation for every new word. Words a
+ * human edited or verified are never replaced or re-translated.
  *
  * Pages are read in batches because a serverless request cannot run a whole-book scan;
  * the server decides the batch size and reports how much is left after each call.
@@ -48,6 +57,9 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
   const [current, setCurrent] = useState<number | null>(null);
   const [read, setRead] = useState(0);
   const [results, setResults] = useState<BatchPage[]>([]);
+  const [translated, setTranslated] = useState(0);
+  const [units, setUnits] = useState(0);
+  const [rejected, setRejected] = useState(0);
   const [remaining, setRemaining] = useState(0);
   const [error, setError] = useState("");
   const stopRef = useRef(false);
@@ -71,6 +83,7 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
   async function run() {
     if (!canRun) return;
     setBusy(true); setError(""); setResults([]); setRead(0); stopRef.current = false;
+    setTranslated(0); setUnits(0); setRejected(0);
     let readSoFar = 0;
     try {
       while (!stopRef.current && readSoFar < PAGES_PER_RUN) {
@@ -88,6 +101,11 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         setRead(readSoFar);
         setRemaining(out.remaining_pages);
         setResults((prev) => [...prev, ...out.results]);
+        // Extraction now reports what the whole run produced: units found, words rejected
+        // as unusable, and Uzbek translations created — all three are what the user checks.
+        setTranslated((n) => n + (out.translated ?? 0));
+        setRejected((n) => n + (out.rejected ?? 0));
+        if (out.units_detected) setUnits(out.units_detected);
         const last = out.results[out.results.length - 1];
         setCurrent(last ? last.page : null);
         if (out.stopped) {
@@ -117,7 +135,8 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
     // The request ran out of time; the page is untouched and the next call picks it up.
     if (r.status === "deferred") return "keyingi so'rovda o'qiladi";
     const unit = r.unit ? `${r.unit}-unit · ` : "";
-    return `${unit}${r.words_added ?? 0} ta yangi so'z`;
+    const rejected = (r.rejected?.length ?? 0) + (r.duplicates?.length ?? 0);
+    return `${unit}${r.words_added ?? 0} ta yangi so'z${rejected ? ` · ${rejected} ta rad etildi` : ""}`;
   }
 
   return (
@@ -142,8 +161,9 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
       <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
         <input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
         <span>
-          Sahifa rasmlari sozlangan tashqi AI xizmatiga yuborilishiga roziman. So'zlar tarjimasiz
-          saqlanadi va «tekshirilishi kerak» deb belgilanadi; mavjud so'zlar va progressingiz o'zgarmaydi.
+          Sahifa rasmlari sozlangan tashqi AI xizmatiga yuborilishiga roziman. So'zlar bo'limlarga
+          (unit) ajratiladi va o'zbekchaga mashinaviy tarjima qilinadi («auto» belgisi bilan);
+          tahrirlagan yoki tasdiqlagan so'zlaringiz va progressingiz o'zgarmaydi.
         </span>
       </label>
       <div className="flex flex-wrap gap-2">
@@ -168,15 +188,17 @@ export function VisionVocabulary({ bookId, onDone }: { bookId: string; onDone?: 
         <div className="rounded-lg bg-slate-100 p-3 text-xs dark:bg-slate-800" role="status">
           <p className="font-medium">
             Jami {added} ta so'z qo'shildi · {results.length} sahifa o'qildi
+            {units ? ` · ${units} bo'lim` : ""}
+            {translated ? ` · ${translated} ta tarjima` : ""}
+            {rejected ? ` · ${rejected} ta yaroqsiz yozuv` : ""}
             {skipped.length ? ` · ${skipped.length} sahifa lug'at emas` : ""}
             {deferred.length ? ` · ${deferred.length} sahifa keyingi so'rovga qoldi` : ""}
             {failed.length ? ` · ${failed.length} ta xato` : ""}
           </p>
           <ul className="mt-2 max-h-40 space-y-1 overflow-auto">
             {results.map((r) => (
-              <li key={r.page} className={r.status === "error" ? "text-red-700 dark:text-red-300" : ""}>
+              <li key={`${r.page}-${r.status}`} className={r.status === "error" ? "text-red-700 dark:text-red-300" : ""}>
                 {r.page}-sahifa: {line(r)}
-                {r.status === "ok" && r.entries?.length ? ` — ${r.entries.slice(0, 3).join(", ")}` : ""}
               </li>
             ))}
           </ul>

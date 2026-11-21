@@ -31,6 +31,7 @@ from app.models import (
     ProcessingJob,
     Profile,
     User,
+    VocabularyUnit,
     VocabularyWord,
 )
 from app.schemas import DirectUploadIn, BookOut, BookStructureOut, ChapterOut, JobOut, LessonOut, OkOut, PageOut, OCRPageIn, OCRAIReviewIn, VisionExercisesIn, VisionVocabularyBatchIn, VisionVocabularyIn, VisionMapPreviewIn, VisionTopicPreviewIn
@@ -649,16 +650,38 @@ def _retry_save(db: Session, book, page_number: int, holder: dict[str, Any],
 VISION_VOCABULARY_BATCH = 10
 
 
+def _unit_hint_for(db: Session, book, page_number: int) -> dict[str, Any] | None:
+    """The unit this page belongs to, as the single-page endpoints should be told it.
+
+    Without this, reading one page on its own would store its words with no unit and a
+    continuation page would appear to start a new one. The stored ranges come from the
+    heading pass, so they are the same answer the batch path uses.
+    """
+    unit = db.scalar(select(VocabularyUnit).where(
+        VocabularyUnit.book_id == book.id,
+        VocabularyUnit.page_start <= page_number,
+        VocabularyUnit.page_end >= page_number).order_by(VocabularyUnit.number).limit(1))
+    if unit is None:
+        return None
+    return {"unit_number": unit.number, "title": unit.title,
+            "page_start": unit.page_start, "page_end": unit.page_end,
+            "confidence": unit.confidence}
+
+
 @router.post("/{book_id}/vision-vocabulary/batch")
 def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, request: Request,
                                 db: Session = Depends(get_db),
                                 user: User = Depends(get_current_user)):
     """Read the next N pending pages in one request; report per page, never abort on one.
 
-    Serverless deployments cannot run a whole-book scan inside one invocation, so the
-    client calls this repeatedly. A page that is not a word list is reported as skipped and
-    the batch continues; an account-level problem (quota, provider) stops it immediately
-    because every following page would fail the same way.
+    Serverless deployments cannot run a whole-book scan inside one invocation, so the client
+    calls this repeatedly. Every page is read **with its unit as context** — taken from the
+    heading pass the first call ran — and the entries are translated into Uzbek in the same
+    request, so a completed run leaves a Lug'at that can be practised, not just listed.
+
+    ``replace_existing`` (first batch of a fresh run) clears the previous machine extraction
+    and the "already read" page stamps, so a re-extraction cannot accumulate duplicates and
+    actually re-reads pages the old extractor skipped.
     """
     limit(request, "vision_vocabulary", 300, 3600, user.id)
     book = owned_book(db, user, book_id)
@@ -666,81 +689,87 @@ def run_vision_vocabulary_batch(book_id: str, data: VisionVocabularyBatchIn, req
         raise ApiError("BOOK_NOT_READY", "Kitob tayyor emas.", 409)
     if not data.consent_images_to_provider:
         raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmini AI xizmatiga yuborish uchun rozilik kerak.", 422)
-    from app.services.ai.vision_vocabulary import analyse_page, mark_scanned, pending_pages, save_words
+    from app.services import vocab_extract
+    from app.services.ai.vision_vocabulary import pending_pages
 
-    wanted = data.pages[:VISION_VOCABULARY_BATCH] if data.pages else \
+    wanted = [p for p in data.pages if p > 0][:VISION_VOCABULARY_BATCH] if data.pages else \
         pending_pages(db, book, include_text_pages=data.include_text_pages)[:VISION_VOCABULARY_BATCH]
-    results: list[dict[str, Any]] = []
-    added_total = 0
-    stop = False
-    # A serverless function is killed at its timeout, and a killed request loses the whole
-    # batch — including pages already paid for. Counting pages is not enough: a slow model
-    # can take a third of the budget for one page. So the loop also watches the clock and
-    # stops STARTING new pages once the budget is spent, leaving them for the next request.
-    # ``remaining_pages`` tells the client to call again.
+
     started = time.monotonic()
-    budget = settings.vocab_vision_batch_seconds
-    for page_number in wanted:
-        if not stop and results and time.monotonic() - started > budget:
-            results.append({"page": page_number, "status": "deferred",
-                            "reason": "request budget spent; call the batch again",
-                            "words_added": 0})
-            continue
-        if stop:
-            results.append({"page": page_number, "status": "skipped",
-                            "reason": "batch stopped by a previous error", "words_added": 0})
-            continue
-        result_holder: dict[str, Any] = {}
-        result = None
-        try:
-            result, _provider, _model = analyse_page(db, user.id, book, page_number)
-            if not result.is_word_list:
-                mark_scanned(db, book, page_number)
-                results.append({"page": page_number, "status": "not_a_word_list",
-                                "unit": result.unit, "words_added": 0})
-                continue
-            saved = save_words(db, book, page_number, result)
-            # Published before the stamp so a failed stamp can be retried without redoing
-            # the paid model call.
-            result_holder.update(result=result, unit=result.unit,
-                                 entries=[w.term for w in result.words], saved=saved)
-            mark_scanned(db, book, page_number)
-            added_total += saved["words_added"]
-            results.append({"page": page_number, "status": "ok", "unit": result.unit,
-                            "words_found": saved["words_found"],
-                            "words_added": saved["words_added"],
-                            "entries": [w.term for w in result.words]})
-        except ApiError as exc:
-            # Quota / provider / configuration problems affect every page: stop the batch.
-            results.append({"page": page_number, "status": "error", "code": exc.code,
-                            "message": exc.message_uz, "words_added": 0})
-            if exc.http_status >= 429 or exc.code in ("AI_NOT_CONFIGURED", "AI_VISION_NOT_CONFIGURED",
-                                                      "AI_PROVIDER_REJECTED", "AI_BAD_OUTPUT"):
-                stop = True
-        except Exception as exc:  # noqa: BLE001 - one bad page must not lose the batch
-            # A dropped pooled connection and a genuinely unreadable page look the same
-            # from here, and they need opposite handling: the first must be retried on a
-            # fresh connection, the second must not cost another paid model call. The
-            # model call has already been paid for by the time we write, so a retry only
-            # repeats the write, and the page's words are still in ``result``/``saved``.
-            log.warning("vision vocabulary batch: page %s failed: %s", page_number, exc)
-            db.rollback()
-            if _is_transient_db_error(exc) and _retry_save(db, book, page_number, result_holder):
-                saved = result_holder.pop("saved", {"words_added": 0, "words_found": 0})
-                added_total += saved["words_added"]
-                results.append({"page": page_number, "status": "ok", "unit": result_holder.get("unit", ""),
-                                "words_found": saved["words_found"],
-                                "words_added": saved["words_added"],
-                                "entries": result_holder.get("entries", []),
-                                "retried": True})
-                continue
-            results.append({"page": page_number, "status": "error", "code": "PAGE_FAILED",
-                            "message": "Sahifa o'qilmadi (ma'lumotlar bazasi bilan aloqa).",
-                            "words_added": 0})
-    remaining = len(pending_pages(db, book, include_text_pages=data.include_text_pages))
-    return {"book_id": book.id, "processed": len(results), "words_added": added_total,
-            "remaining_pages": remaining, "stopped": stop,
-            "elapsed_seconds": round(time.monotonic() - started, 1), "results": results}
+    cleared: dict[str, Any] = {}
+    if data.replace_existing:
+        cleared = vocab_extract.clear_extraction(db, book)
+        vocab_extract.clear_extraction_flags(db, book)
+        if not data.pages:
+            # After clearing, "pending" is the whole book again: never return an empty batch
+            # just because everything had been stamped as read before the clear.
+            wanted = (vocab_extract.all_pages(db, book)
+                      or list(range(1, (book.page_count or 0) + 1)))[:VISION_VOCABULARY_BATCH]
+
+    # The heading pass must run before the first page is read, once per extraction run.
+    # ``units_detected`` is 0 when the units already existed: the heading pass is a whole-book
+    # job, so it runs once per extraction run and each batch reuses the stored ranges.
+    units_created = 0
+    if not db.scalar(select(VocabularyUnit.id).where(VocabularyUnit.book_id == book.id).limit(1)):
+        units_report = vocab_extract.extract_book(db, book, pages=[], translate=False,
+                                                  replace=False, unitize=True)
+        units_created = units_report["units"]
+
+    # The heading pass already ran (here or in an earlier batch), so the pages are read
+    # straight away instead of repeating a whole-book scan inside every batch request.
+    report = vocab_extract.extract_book(
+        db, book, pages=wanted, translate=True, replace=False, unitize=not units_created,
+        max_seconds=settings.vocab_vision_batch_seconds) \
+        if wanted else {"words_added": 0, "warnings": [], "translated": 0, "rejected": 0,
+                        "duplicates": 0, "pages_read": 0, "per_page": [], "deferred": 0}
+    remaining = len(vocab_extract.pending_pages(db, book, include_text_pages=data.include_text_pages))
+    return {"book_id": book.id, "processed": report["pages_read"],
+            "words_added": report["words_added"], "translated": report["translated"],
+            "rejected": report["rejected"], "duplicates": report["duplicates"],
+            "units_detected": units_created,
+            "pages": wanted,
+            "remaining_pages": remaining,
+            "stopped": any(item.get("status") == "error" for item in report["per_page"]),
+            "cleared": cleared,
+            "elapsed_seconds": round(time.monotonic() - started, 1),
+            "results": report["per_page"],
+            "stamp_retried": report.get("stamp_retried", False),
+            "warnings": report["warnings"]}
+
+
+@router.post("/{book_id}/vocabulary/units/detect")
+def detect_vocabulary_units(book_id: str, data: VisionVocabularyIn, request: Request,
+                            db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Run (or re-run) the heading pass alone: unit numbers, titles and page ranges."""
+    limit(request, "vision_vocabulary", 60, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    if not data.consent_images_to_provider:
+        raise ApiError("AI_IMAGE_CONSENT_REQUIRED", "Sahifa rasmini AI xizmatiga yuborish uchun rozilik kerak.", 422)
+    from app.services import vocab_extract
+
+    report = vocab_extract.extract_book(db, book, pages=[], translate=False,
+                                        replace=False, unitize=True)
+    return {"book_id": book.id, "units": report["unit_list"], "count": report["units"],
+            "warnings": report["warnings"]}
+
+
+@router.post("/{book_id}/vocabulary/translate")
+def translate_book_vocabulary(book_id: str, request: Request,
+                              limit_words: int = 100,
+                              db: Session = Depends(get_db),
+                              user: User = Depends(get_current_user)):
+    """Bulk "translate missing" for the whole book, bounded per request."""
+    limit(request, "vocabulary_translate", 120, 3600, user.id)
+    book = owned_book(db, user, book_id)
+    from app.services.ai import vocab_translate
+
+    pending = vocab_translate.missing_translations(db, book.id, limit=max(1, min(limit_words, 300)))
+    if not pending:
+        return {"requested": 0, "translated": 0, "remaining": 0}
+    stats = vocab_translate.translate_words(db, user.id, pending)
+    remaining = len(vocab_translate.missing_translations(db, book.id, limit=5000))
+    return {"requested": stats["requested"], "translated": stats["translated"],
+            "remaining": remaining, "error": stats.get("error", "")}
 
 
 @router.get("/{book_id}/vision-vocabulary/pending")
@@ -776,7 +805,8 @@ def preview_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabu
     _vocabulary_page(db, book, page_number, data)
     from app.services.ai.vision_vocabulary import analyse_page, words_as_preview
 
-    result, provider, model = analyse_page(db, user.id, book, page_number)
+    unit_hint = _unit_hint_for(db, book, page_number)
+    result, provider, model = analyse_page(db, user.id, book, page_number, unit_hint=unit_hint)
     return {"page": page_number, "page_number": page_number, "provider": provider,
             "model": model, "unit": result.unit, "is_word_list": result.is_word_list,
             "heading": result.heading, "entries": words_as_preview(result, page_number),
@@ -795,14 +825,15 @@ def save_vision_vocabulary(book_id: str, page_number: int, data: VisionVocabular
     from app.services.ai.vision_vocabulary import (analyse_page, mark_scanned, save_words,
                                                    words_as_preview)
 
-    result, provider, model = analyse_page(db, user.id, book, page_number)
+    unit_hint = _unit_hint_for(db, book, page_number)
+    result, provider, model = analyse_page(db, user.id, book, page_number, unit_hint=unit_hint)
     mark_scanned(db, book, page_number)
     if not result.is_word_list:
         # Nothing is written when the page is not a word list: an empty Lug'at stays honest.
         raise ApiError("NOT_A_WORD_LIST",
                        "Bu sahifada lug'at ro'yxati topilmadi; hech narsa saqlanmadi. "
                        "Sahifa mashq yoki matn bo'lishi mumkin.", 422)
-    saved = save_words(db, book, page_number, result)
+    saved = save_words(db, book, page_number, result, unit_hint=unit_hint)
     if saved["words_found"] == 0:
         raise ApiError("NO_WORDS_FOUND", "Sahifadan so'z ajratilmadi; hech narsa saqlanmadi.", 422)
     return {"page": page_number, "page_number": page_number, "provider": provider,

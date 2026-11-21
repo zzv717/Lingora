@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     # "deferred" and the client asks again, so a serverless timeout can never swallow a
     # batch that was already paid for.
     vocab_vision_batch_seconds: float = 45.0
+    # How many translate-and-store rounds one extraction may run. Each round translates up to
+    # ``BATCH_SIZE * 8`` words, so the default covers a few thousand entries; whatever is left
+    # stays visible as "tarjimasiz" and is finished by the "translate missing" button.
+    vocab_translate_max_rounds: int = 40
 
     # --- Plan limits (subscription-ready; MVP is free, no payments anywhere) ---
     free_max_books: int = 3

@@ -53,8 +53,12 @@ content_types allowed: theory, exercise, vocabulary, review, test, other. Unknow
 author must be empty strings; unknown topic boundaries must be null."""
 
 
-def render_pages(book, page_numbers: list[int]):
-    """Render only selected PDF pages with a bounded output size."""
+def render_pages(book, page_numbers: list[int], max_pixels: int | None = None):
+    """Render only selected PDF pages with a bounded output size.
+
+    ``max_pixels`` lowers the resolution for work that does not need to read small print
+    (a unit-heading pass only needs the banner), which is what makes a whole-book pass cheap.
+    """
     try:
         content = get_storage().read(book.storage_path)
     except ApiError:
@@ -72,7 +76,7 @@ def render_pages(book, page_numbers: list[int]):
                 longest = max(page.rect.width, page.rect.height)
                 if longest <= 0:
                     raise ValueError('invalid page dimensions')
-                scale = min(2.0, 1800.0 / longest)
+                scale = min(2.0, (max_pixels or 1800.0) / longest)
                 pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                 img = pix.tobytes('png')
                 images.append({'mime_type': 'image/png', 'data_base64': base64.b64encode(img).decode('ascii')})
