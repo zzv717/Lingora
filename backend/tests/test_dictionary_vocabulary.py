@@ -249,3 +249,27 @@ def test_vocabulary_picture_endpoint_crops_from_the_original_pdf(client):
     dpi_equivalent = image.width / max(1e-6, (x2 - x1) * page_width_points) * 72
     assert dpi_equivalent >= 180, f"crop resolution {dpi_equivalent:.0f} DPI is too low"
     assert client.get(f"/api/v1/books/{book_id}/vocabulary/{word['id']}/picture.png").status_code == 401
+
+
+def test_unbalanced_pronunciation_keeps_the_part_of_speech():
+    """A scan that drops a closing bracket must not cost the word its grammar.
+
+    "angry [sengro adj." is what the real reference book's text layer contains; before this
+    the entry survived with an empty part of speech, which the Lug'at screen shows as a
+    blank badge. Nothing may be guessed here — the label is printed on the line.
+    """
+    for text, term, pos in [("r angry [sengro adj.", "angry", "adjective"),
+                            ("r attack [at*io v.", "attack", "verb"),
+                            ("hide [haid] y.", "hide", "verb")]:      # scanned "y" for "v"
+        entry = _dictionary_entry({"text": text, "bbox": [0, 0, 1, 1]})
+        assert entry and entry["term"] == term and entry["part_of_speech"] == pos, text
+
+
+def test_definition_is_a_sentence_not_a_leftover_illustration_fragment():
+    """A definition column polluted by an illustration must yield the sentence, or nothing."""
+    from app.services.structure_detector import _looks_like_sentence
+
+    assert _looks_like_sentence("To agree is to say yes or to think the same way.")
+    assert not _looks_like_sentence("1* ^ '")
+    assert not _looks_like_sentence("I iffm&")
+    assert not _looks_like_sentence("r")

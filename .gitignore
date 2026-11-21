@@ -26,6 +26,9 @@ backend/data/
 # Generated from npm dependencies at install time
 frontend/public/ocr/
 
+# Sample books used to verify extraction by hand: copyrighted material, not source.
+samples/
+
 # Vision debug renders and verification reports (generated artifacts)
 backend/data/vision-debug/
 backend/data/verify/

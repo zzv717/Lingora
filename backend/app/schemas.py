@@ -436,5 +436,12 @@ class VisionVocabularyIn(BaseModel):
     consent_images_to_provider: bool
 
 
+class VisionVocabularyBatchIn(BaseModel):
+    """One bounded batch of pages. Empty ``pages`` lets the server pick the next pending ones."""
+    consent_images_to_provider: bool
+    pages: list[int] = []
+    include_text_pages: bool = False
+
+
 class VisionTopicPreviewIn(VisionMapPreviewIn):
     topic: str = Field(max_length=300)

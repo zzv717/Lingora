@@ -9,7 +9,7 @@ import json
 from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.models import UsageEvent, VocabularyWord
+from app.models import BookPage, UsageEvent, VocabularyWord
 from app.services.ai.vision_vocabulary import clean_example, clean_term, normalize_word_list
 from tests.conftest import auth_headers, make_user
 from tests.test_browser_ocr import setup_scan
@@ -22,14 +22,15 @@ def word_list_output(*terms):
     words = []
     for i, term in enumerate(terms or ("afraid", "agree", "angry")):
         words.append({
-            "term": f"{term} [pron-{i}] adj.",
+            "word": f"{term} [pron-{i}] adj.",
             "part_of_speech": "adjective",
-            "definition_en": f"When someone is {term}, they feel something.",
-            "example_sentence": f"» The {term} woman was afraid of what she saw.",
+            "definition": f"When someone is {term}, they feel something.",
+            "example": f"» The {term} woman was afraid of what she saw.",
             "bbox": [0.1, 0.1 + i * 0.08, 0.9, 0.17 + i * 0.08],
             "confidence": 0.9,
         })
-    return json.dumps({"is_word_list": True, "heading": "Word List", "words": words, "warnings": []})
+    return json.dumps({"is_word_list": True, "unit": "Unit 1", "heading": "Word List",
+                       "entries": words, "warnings": []})
 
 
 def setup(monkeypatch, responses):
@@ -59,19 +60,19 @@ def test_clean_term_drops_pronunciation_and_part_of_speech():
 
 
 def test_normalisation_drops_duplicates_and_junk():
-    result = normalize_word_list({"words": [
-        {"term": "afraid [uh-freyd] adj.", "definition_en": "When someone is afraid."},
-        {"term": "Agree", "definition_en": "To agree is to say yes."},
-        {"term": "afraid", "definition_en": "duplicate"},
-        {"term": "a whole definition sentence that is too long to be a word", "definition_en": "junk"},
+    result = normalize_word_list({"unit": "Unit 2", "entries": [
+        {"word": "afraid [uh-freyd] adj.", "definition": "When someone is afraid."},
+        {"word": "Agree", "definition": "To agree is to say yes."},
+        {"word": "afraid", "definition": "duplicate"},
+        {"word": "a whole definition sentence that is too long to be a word", "definition": "junk"},
     ]})
-    assert result.is_word_list is True
+    assert result.is_word_list is True and result.unit == "2"
     assert [w.term for w in result.words] == ["afraid", "agree"]
 
 
 def test_a_page_without_a_word_list_is_not_saved(client, db, monkeypatch):
     h, book, _, _ = setup_scan(client, db)
-    setup(monkeypatch, [json.dumps({"is_word_list": False, "words": []})])
+    setup(monkeypatch, [json.dumps({"is_word_list": False, "entries": []})])
     r = client.post(url(book, 1), headers=h, json={"consent_images_to_provider": True})
     assert r.status_code == 422 and r.json()["error"]["code"] == "NOT_A_WORD_LIST"
     db.expire_all()
@@ -126,8 +127,9 @@ def test_preview_saves_nothing_and_records_usage(client, db, monkeypatch):
     setup(monkeypatch, [word_list_output()])
     r = client.post(url(book, 1, "/preview"), headers=h, json={"consent_images_to_provider": True})
     assert r.status_code == 200 and r.json()["saved"] is False
-    assert [w["term"] for w in r.json()["words"]] == ["afraid", "agree", "angry"]
-    assert r.json()["words"][0]["bbox"] is not None
+    assert [w["word"] for w in r.json()["entries"]] == ["afraid", "agree", "angry"]
+    assert r.json()["entries"][0]["bbox"] is not None
+    assert r.json()["unit"] == "1" and r.json()["page"] == 1
     db.expire_all()
     assert db.scalar(select(func.count(VocabularyWord.id)).where(VocabularyWord.book_id == book)) == 0
     assert db.scalar(select(func.count(UsageEvent.id))
@@ -201,3 +203,73 @@ def test_text_pages_can_be_included_when_rules_found_nothing(client, db, monkeyp
                          headers=h).json()
     # Page 2 already has a word, so only page 1 still needs reading.
     assert widened["pages"] == [1] and widened["include_text_pages"] is True
+
+
+def test_batch_reads_pages_and_reports_per_page(client, db, monkeypatch):
+    """A whole-book scan is walked in bounded batches; one bad page must not lose the rest."""
+    h, book, _, _ = setup_scan(client, db)
+    setup(monkeypatch, [word_list_output("afraid"), word_list_output("agree")])
+    r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
+                    json={"consent_images_to_provider": True, "pages": [1, 2]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["words_added"] == 2 and body["processed"] == 2
+    assert [item["status"] for item in body["results"]] == ["ok", "ok"]
+    assert body["results"][0]["unit"] == "1"
+    db.expire_all()
+    assert {w.term for w in db.scalars(select(VocabularyWord).where(VocabularyWord.book_id == book))} \
+        == {"afraid", "agree"}
+
+
+def test_a_page_that_is_not_a_word_list_is_marked_scanned_and_not_offered_again(client, db, monkeypatch):
+    """Re-reading a non-list page costs a paid call and cannot change the answer."""
+    h, book, _, _ = setup_scan(client, db)
+    setup(monkeypatch, [json.dumps({"is_word_list": False, "entries": []})])
+    r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
+                    json={"consent_images_to_provider": True, "pages": [1]})
+    assert r.json()["results"][0]["status"] == "not_a_word_list"
+    db.expire_all()
+    page = db.scalar(select(BookPage).where(BookPage.book_id == book, BookPage.page_number == 1))
+    assert page.vocab_scanned_at is not None
+    remaining = client.get(f"{API}/books/{book}/vision-vocabulary/pending", headers=h).json()
+    assert remaining["pages"] == [2]     # page 1 is done, page 2 still to read
+
+
+def test_words_land_in_the_unit_the_model_read(client, db, monkeypatch):
+    """A book whose pages carry no lesson still files words under the printed unit."""
+    h, book, _, _ = setup_scan(client, db)
+    from app.models import Chapter, Lesson
+
+    db.query(Lesson).filter(Lesson.book_id == book).delete()
+    chapter = Chapter(book_id=book, title="People", number="1", page_start=1, page_end=2, order_index=0)
+    db.add(chapter)
+    db.flush()
+    db.add(Lesson(book_id=book, chapter_id=chapter.id, title="Unit 1", page_start=1, page_end=2,
+                  order_index=0))
+    db.commit()
+
+    setup(monkeypatch, [word_list_output("afraid")])
+    client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
+                json={"consent_images_to_provider": True, "pages": [1]})
+    db.expire_all()
+    word = db.scalar(select(VocabularyWord).where(VocabularyWord.book_id == book))
+    assert word.chapter_id == chapter.id       # matched by the unit the banner showed
+    assert word.lesson_id is not None
+
+
+def test_units_view_lists_words_per_unit_and_keeps_orphans(client, db, monkeypatch):
+    h, book, lesson, _ = setup_scan(client, db)
+    from app.models import Lesson
+
+    db.query(Lesson).filter(Lesson.book_id == book, Lesson.id != lesson).delete()
+    db.add_all([
+        VocabularyWord(book_id=book, lesson_id=lesson, term="afraid", page_number=1,
+                       part_of_speech="adjective", definition_en="When someone is afraid."),
+        VocabularyWord(book_id=book, term="agree", page_number=2, needs_translation=True),
+    ])
+    db.commit()
+    body = client.get(f"{API}/books/{book}/vocabulary/units", headers=h).json()
+    assert body["total"] == 2
+    assert [unit["title"] for unit in body["units"]] == ["Lesson", "Boshqa lug'at yozuvlari"]
+    assert [e["word"] for e in body["units"][0]["entries"]] == ["afraid"]
+    assert [e["word"] for e in body["units"][1]["entries"]] == ["agree"]

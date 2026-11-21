@@ -70,6 +70,10 @@ class BookPage(Base, UuidPk):
     needs_ocr: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     has_warning: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # When a vision vocabulary pass read this page. A pass is paid per page, and a page
+    # that is simply not a word list must not be offered again on every run.
+    vocab_scanned_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), default=None)
 
     book: Mapped[Book] = relationship(back_populates="pages")
 

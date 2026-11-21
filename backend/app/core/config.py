@@ -44,6 +44,14 @@ class Settings(BaseSettings):
 
     # --- Database (PostgreSQL in prod, e.g. Supabase pooler URL; SQLite for local dev) ---
     database_url: str = "sqlite:///./data/lingora.db"
+    # Direct (non-pooler) URL used ONLY for schema upgrades. A transaction-level advisory
+    # lock taken through a pooler (PgBouncer transaction mode) can be released on a
+    # different backend connection, which turns the upgrade lock into a no-op. When empty
+    # the normal URL is used, so local and single-connection setups need no extra setting.
+    database_migration_url: str = ""
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_recycle: int = 300   # seconds; a pooler may drop idle connections before this
 
     # --- Storage: local disk or Supabase Storage ---
     storage_backend: Literal["local", "supabase"] = "local"

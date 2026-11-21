@@ -12,6 +12,7 @@ from app.core.rate_limit import limit
 from app.db.session import get_db
 from app.models import (
     Book,
+    Chapter,
     LearningProgress,
     Lesson,
     Profile,
@@ -51,6 +52,56 @@ def book_vocabulary(book_id: str, lesson_id: str = "", limit_words: int = Query(
     words = db.scalars(q.order_by(VocabularyWord.page_number, VocabularyWord.term)
                        .offset(offset).limit(limit_words)).all()
     return words
+
+
+@router.get("/books/{book_id}/vocabulary/units")
+def vocabulary_by_unit(book_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    """Extracted words grouped by unit/lesson, in page order.
+
+    A vocabulary book is organised in units; a flat list of 600 words is unusable for
+    checking that extraction worked. Words that belong to no unit are grouped last rather
+    than dropped, so nothing silently disappears from the view.
+    """
+    owned_book(db, user, book_id)
+    lessons = list(db.scalars(select(Lesson).where(Lesson.book_id == book_id)
+                              .order_by(Lesson.order_index)).all())
+    chapters = {c.id: c for c in db.scalars(select(Chapter).where(Chapter.book_id == book_id)).all()}
+    words = list(db.scalars(select(VocabularyWord).where(VocabularyWord.book_id == book_id)
+                            .order_by(VocabularyWord.page_number, VocabularyWord.term)).all())
+    by_lesson: dict[str, list[VocabularyWord]] = {}
+    unassigned: list[VocabularyWord] = []
+    for word in words:
+        if word.lesson_id:
+            by_lesson.setdefault(word.lesson_id, []).append(word)
+        else:
+            unassigned.append(word)
+
+    def entry(word: VocabularyWord) -> dict:
+        return {"id": word.id, "word": word.term, "part_of_speech": word.part_of_speech,
+                "definition": word.definition_en, "example": word.example_sentence,
+                "translation_uz": word.translation_uz, "page": word.page_number,
+                "source": word.source, "needs_translation": word.needs_translation,
+                # The illustration is cropped from the original PDF in the browser, so the
+                # unit view must carry its location too.
+                "picture_page": word.picture_page, "picture_bbox": word.picture_bbox}
+
+    units = []
+    for lesson in lessons:
+        items = by_lesson.get(lesson.id, [])
+        if not items:
+            continue
+        chapter = chapters.get(lesson.chapter_id) if lesson.chapter_id else None
+        units.append({"unit": (chapter.number if chapter else "") or str(lesson.order_index + 1),
+                      "title": lesson.title, "lesson_id": lesson.id,
+                      "page_start": lesson.page_start, "page_end": lesson.page_end,
+                      "count": len(items), "entries": [entry(w) for w in items]})
+    if unassigned:
+        pages = sorted({w.page_number for w in unassigned})
+        units.append({"unit": "", "title": "Boshqa lug'at yozuvlari", "lesson_id": None,
+                      "page_start": pages[0], "page_end": pages[-1],
+                      "count": len(unassigned), "entries": [entry(w) for w in unassigned]})
+    return {"book_id": book_id, "total": len(words), "units": units}
 
 
 @router.get("/books/{book_id}/vocabulary/{word_id}/picture")
