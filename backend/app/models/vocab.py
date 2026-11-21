@@ -19,9 +19,36 @@ VOCAB_QUESTION_TYPES = (
 )
 
 
+class VocabularyUnit(Base, UuidPk, Timestamps):
+    """One unit/lesson of a book's word list, as the book prints it.
+
+    Units are a first-class row rather than a string on each word: the Lug'at screen groups
+    by them, edits move words between them, and a unit's page range has to survive a
+    re-extraction. ``number`` is the printed unit number when there is one; a book that
+    numbers chapters differently keeps its own label in ``title``.
+    """
+
+    __tablename__ = "vocabulary_units"
+    __table_args__ = (UniqueConstraint("book_id", "number", name="uq_vocab_unit_number"),)
+
+    book_id: Mapped[str] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True, nullable=False)
+    number: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    page_start: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    page_end: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 0..1 from the heading pass; kept so a low-confidence unit can be flagged in the UI.
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    words: Mapped[list["VocabularyWord"]] = relationship(
+        back_populates="unit", cascade="all, delete-orphan")
+
+
 class VocabularyWord(Base, UuidPk, Timestamps):
     __tablename__ = "vocabulary_words"
-    __table_args__ = (UniqueConstraint("book_id", "term", name="uq_vocab_term"),)
+    # A book may legitimately list the same spelling twice under two units ("well" as an
+    # adverb in one unit, as a noun in another), so uniqueness is per unit, not per book.
+    __table_args__ = (UniqueConstraint("book_id", "unit_id", "term", name="uq_vocab_term"),)
 
     book_id: Mapped[str] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True, nullable=False)
     lesson_id: Mapped[Optional[str]] = mapped_column(ForeignKey("lessons.id", ondelete="SET NULL"), default=None)
@@ -39,8 +66,18 @@ class VocabularyWord(Base, UuidPk, Timestamps):
     # never re-generated, so the picture stays sharp at any screen size.
     picture_page: Mapped[Optional[int]] = mapped_column(Integer, default=None)
     picture_bbox: Mapped[Optional[Any]] = mapped_column(JSON, default=None)
+    # --- extraction quality, all optional so old rows stay valid ---
+    unit_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("vocabulary_units.id", ondelete="SET NULL"), index=True, default=None)
+    # Where the entry sits on its page, top-to-bottom (and left column before right).
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # "auto" = machine translation (usable in tests), "verified" = user confirmed,
+    # "edited" = user changed it, "" = nothing translated yet.
+    translation_status: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    alt_translations: Mapped[Optional[Any]] = mapped_column(JSON, default=None)
 
     book: Mapped["Book"] = relationship(back_populates="vocabulary")  # noqa: F821
+    unit: Mapped[Optional[VocabularyUnit]] = relationship(back_populates="words")
 
 
 class VocabularySession(Base, UuidPk, Timestamps):

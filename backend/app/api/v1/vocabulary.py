@@ -17,12 +17,15 @@ from app.models import (
     Lesson,
     Profile,
     User,
+    VocabularyUnit,
     VocabularyProgress,
     VocabularySession,
     VocabularyWord,
 )
 from app.schemas import (
     OkOut,
+    VocabUnitUpdateIn,
+    VocabWordUpdateIn,
     VocabAnswerIn,
     VocabAnswerOut,
     VocabSessionCompleteOut,
@@ -54,54 +57,263 @@ def book_vocabulary(book_id: str, lesson_id: str = "", limit_words: int = Query(
     return words
 
 
+def _unit_out(unit, words: list[VocabularyWord]) -> dict:
+    pages = [w.page_number for w in words if w.page_number]
+    return {
+        "id": unit.id,
+        "unit": unit.number,
+        "number": unit.number,
+        "title": unit.title or f"Unit {unit.number}",
+        "unit_title": unit.title,
+        "lesson_id": None,
+        "page_start": unit.page_start or (min(pages) if pages else 0),
+        "page_end": unit.page_end or (max(pages) if pages else 0),
+        "confidence": round(unit.confidence or 0.0, 2),
+        "count": len(words),
+        "translated_count": sum(1 for w in words if (w.translation_uz or "").strip()),
+        "auto_count": sum(1 for w in words if (w.translation_status or "") == "auto"),
+        "entries": [_entry_out(w) for w in words],
+    }
+
+
+def _entry_out(word: VocabularyWord) -> dict:
+    """One word as the Lug'at screen needs it, including where its picture lives."""
+    return {
+        "id": word.id, "word": word.term, "part_of_speech": word.part_of_speech,
+        "definition": word.definition_en, "example": word.example_sentence,
+        "translation_uz": word.translation_uz,
+        "alt_translations": list(word.alt_translations or []),
+        # ``translation_status`` is the honest source of truth: "" = none, "auto" = machine
+        # translated but immediately usable, "verified"/"edited" = a human touched it.
+        "translation_status": word.translation_status or "",
+        "status": word.translation_status or "",
+        "needs_translation": not (word.translation_uz or "").strip(),
+        "unit_id": word.unit_id, "position": word.position, "page": word.page_number,
+        "source": word.source,
+        "picture_page": word.picture_page, "picture_bbox": word.picture_bbox,
+    }
+
+
+def _book_words(db: Session, book_id: str) -> list[VocabularyWord]:
+    return list(db.scalars(select(VocabularyWord).where(VocabularyWord.book_id == book_id)
+                           .order_by(VocabularyWord.page_number, VocabularyWord.position,
+                                     VocabularyWord.term)).all())
+
+
 @router.get("/books/{book_id}/vocabulary/units")
 def vocabulary_by_unit(book_id: str, db: Session = Depends(get_db),
                        user: User = Depends(get_current_user)):
-    """Extracted words grouped by unit/lesson, in page order.
+    """Extracted words grouped by unit, ordered by unit number, each in page reading order.
 
-    A vocabulary book is organised in units; a flat list of 600 words is unusable for
-    checking that extraction worked. Words that belong to no unit are grouped last rather
-    than dropped, so nothing silently disappears from the view.
+    Units are their own rows now (``vocabulary_units``), detected from the book's real
+    headings, so this view can show a unit even when its pages were only partially read.
+    Words that belong to no unit are grouped last rather than dropped, so nothing silently
+    disappears from the screen.
     """
-    owned_book(db, user, book_id)
-    lessons = list(db.scalars(select(Lesson).where(Lesson.book_id == book_id)
-                              .order_by(Lesson.order_index)).all())
-    chapters = {c.id: c for c in db.scalars(select(Chapter).where(Chapter.book_id == book_id)).all()}
-    words = list(db.scalars(select(VocabularyWord).where(VocabularyWord.book_id == book_id)
-                            .order_by(VocabularyWord.page_number, VocabularyWord.term)).all())
-    by_lesson: dict[str, list[VocabularyWord]] = {}
+    book = owned_book(db, user, book_id)
+    from app.models import VocabularyUnit
+
+    units = list(db.scalars(select(VocabularyUnit).where(VocabularyUnit.book_id == book_id)
+                            .order_by(VocabularyUnit.number, VocabularyUnit.page_start)).all())
+    words = _book_words(db, book_id)
+    by_unit: dict[str, list[VocabularyWord]] = {}
     unassigned: list[VocabularyWord] = []
     for word in words:
-        if word.lesson_id:
-            by_lesson.setdefault(word.lesson_id, []).append(word)
+        if word.unit_id:
+            by_unit.setdefault(word.unit_id, []).append(word)
         else:
             unassigned.append(word)
 
-    def entry(word: VocabularyWord) -> dict:
-        return {"id": word.id, "word": word.term, "part_of_speech": word.part_of_speech,
-                "definition": word.definition_en, "example": word.example_sentence,
-                "translation_uz": word.translation_uz, "page": word.page_number,
-                "source": word.source, "needs_translation": word.needs_translation,
-                # The illustration is cropped from the original PDF in the browser, so the
-                # unit view must carry its location too.
-                "picture_page": word.picture_page, "picture_bbox": word.picture_bbox}
+    out = []
+    for unit in units:
+        items = by_unit.get(unit.id, [])
+        out.append(_unit_out(unit, items))
+    # A word can point at a unit row that was filtered out; keep it visible as "unassigned".
+    known = {unit.id for unit in units}
+    unassigned.extend(w for uid, items in by_unit.items() if uid not in known for w in items)
 
-    units = []
-    for lesson in lessons:
-        items = by_lesson.get(lesson.id, [])
-        if not items:
-            continue
-        chapter = chapters.get(lesson.chapter_id) if lesson.chapter_id else None
-        units.append({"unit": (chapter.number if chapter else "") or str(lesson.order_index + 1),
-                      "title": lesson.title, "lesson_id": lesson.id,
-                      "page_start": lesson.page_start, "page_end": lesson.page_end,
-                      "count": len(items), "entries": [entry(w) for w in items]})
+    # Books read before units existed (or read without AI) still have their words attached to
+    # a lesson. Those must not all collapse into "other": a lesson is a unit for the reader,
+    # so it is grouped as one, after the real units.
+    lessons = {lesson.id: lesson for lesson in db.scalars(
+        select(Lesson).where(Lesson.book_id == book_id).order_by(Lesson.order_index)).all()}
+    chapters = {c.id: c for c in db.scalars(select(Chapter).where(Chapter.book_id == book_id)).all()}
+    by_lesson: dict[str, list[VocabularyWord]] = {}
+    rest: list[VocabularyWord] = []
+    for word in unassigned:
+        if word.lesson_id and word.lesson_id in lessons:
+            by_lesson.setdefault(word.lesson_id, []).append(word)
+        else:
+            rest.append(word)
+    for lesson in sorted(by_lesson, key=lambda lid: (lessons[lid].page_start or 0,
+                                                     lessons[lid].order_index)):
+        items = by_lesson[lesson]
+        chapter = chapters.get(lessons[lesson].chapter_id) if lessons[lesson].chapter_id else None
+        out.append({"id": None, "unit": (chapter.number if chapter else "") or "",
+                    "number": None, "title": lessons[lesson].title or "", "unit_title":
+                    lessons[lesson].title or "", "lesson_id": lesson,
+                    "page_start": lessons[lesson].page_start, "page_end": lessons[lesson].page_end,
+                    "confidence": 0.0, "count": len(items),
+                    "translated_count": sum(1 for w in items if (w.translation_uz or "").strip()),
+                    "auto_count": sum(1 for w in items if (w.translation_status or "") == "auto"),
+                    "entries": [_entry_out(w) for w in items]})
+    unassigned = rest
+    unassigned.sort(key=lambda w: (w.page_number or 0, w.position or 0))
     if unassigned:
-        pages = sorted({w.page_number for w in unassigned})
-        units.append({"unit": "", "title": "Boshqa lug'at yozuvlari", "lesson_id": None,
-                      "page_start": pages[0], "page_end": pages[-1],
-                      "count": len(unassigned), "entries": [entry(w) for w in unassigned]})
-    return {"book_id": book_id, "total": len(words), "units": units}
+        pages = [w.page_number for w in unassigned if w.page_number]
+        out.append({"id": None, "unit": "", "number": None,
+                    "title": "Boshqa lug'at yozuvlari", "unit_title": "", "lesson_id": None,
+                    "page_start": min(pages) if pages else 0,
+                    "page_end": max(pages) if pages else 0, "confidence": 0.0,
+                    "count": len(unassigned),
+                    "translated_count": sum(1 for w in unassigned if (w.translation_uz or "").strip()),
+                    "auto_count": sum(1 for w in unassigned if (w.translation_status or "") == "auto"),
+                    "entries": [_entry_out(w) for w in unassigned]})
+    translated = sum(1 for w in words if (w.translation_uz or "").strip())
+    return {"book_id": book_id, "total": len(words), "translated": translated,
+            "untranslated": len(words) - translated,
+            "auto_translated": sum(1 for w in words if (w.translation_status or "") == "auto"),
+            "units": out,
+            "vocabulary_note_uz": getattr(book, "vocabulary_note_uz", "") or ""}
+
+
+@router.patch("/books/{book_id}/vocabulary/{word_id}")
+def update_word(book_id: str, word_id: str, data: VocabWordUpdateIn,
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Edit one entry by hand. A human edit is final: status becomes ``edited``."""
+    owned_book(db, user, book_id)
+    from app.models import VocabularyUnit
+
+    word = db.get(VocabularyWord, word_id)
+    if not word or word.book_id != book_id:
+        raise ApiError("WORD_NOT_FOUND", "So'z topilmadi.", 404)
+    if data.word is not None:
+        term = " ".join(data.word.split())
+        if not term:
+            raise ApiError("WORD_REQUIRED", "So'z bo'sh bo'lishi mumkin emas.", 422)
+        if len(term.split()) > 4:
+            raise ApiError("WORD_TOO_LONG", "So'z 4 tadan ko'p so'zdan iborat bo'lishi mumkin emas.", 422)
+        word.term = term[:255]
+    if data.part_of_speech is not None:
+        word.part_of_speech = data.part_of_speech.strip()[:32]
+    if data.definition is not None:
+        word.definition_en = data.definition.strip()
+    if data.example is not None:
+        word.example_sentence = data.example.strip()
+    if data.translation_uz is not None:
+        word.translation_uz = data.translation_uz.strip()[:512]
+        word.needs_translation = not word.translation_uz
+        word.translation_status = "edited" if word.translation_uz else ""
+    if data.unit_id is not None:
+        if data.unit_id == "":
+            word.unit_id = None
+        else:
+            unit = db.get(VocabularyUnit, data.unit_id)
+            if not unit or unit.book_id != book_id:
+                raise ApiError("UNIT_NOT_FOUND", "Bo'lim topilmadi.", 404)
+            word.unit_id = unit.id
+            if data.position is None:
+                word.position = int(db.scalar(
+                    select(func.max(VocabularyWord.position)).where(
+                        VocabularyWord.unit_id == unit.id)) or 0) + 1
+    if data.position is not None:
+        word.position = data.position
+    db.commit()
+    db.refresh(word)
+    return _entry_out(word)
+
+
+@router.post("/books/{book_id}/vocabulary/{word_id}/verify")
+def verify_word(book_id: str, word_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """Approve a machine translation as correct (``auto`` -> ``verified``)."""
+    owned_book(db, user, book_id)
+    word = db.get(VocabularyWord, word_id)
+    if not word or word.book_id != book_id:
+        raise ApiError("WORD_NOT_FOUND", "So'z topilmadi.", 404)
+    if not (word.translation_uz or "").strip():
+        raise ApiError("TRANSLATION_MISSING", "Tasdiqlash uchun avval tarjima kerak.", 422)
+    word.translation_status = "verified"
+    word.needs_translation = False
+    db.commit()
+    db.refresh(word)
+    return _entry_out(word)
+
+
+@router.post("/books/{book_id}/vocabulary/{word_id}/translate")
+def translate_word(book_id: str, word_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """(Re)generate the translation of a single word, replacing an ``auto`` one."""
+    owned_book(db, user, book_id)
+    word = db.get(VocabularyWord, word_id)
+    if not word or word.book_id != book_id:
+        raise ApiError("WORD_NOT_FOUND", "So'z topilmadi.", 404)
+    if word.translation_status in ("verified", "edited"):
+        raise ApiError("TRANSLATION_LOCKED",
+                       "Bu tarjima tekshirilgan/tahrirlangan; avval uni o'zgartirish kerak.", 409)
+    from app.services.ai import vocab_translate
+
+    word.translation_uz = ""
+    word.needs_translation = True
+    stats = vocab_translate.translate_words(db, user.id, [word])
+    db.commit()
+    db.refresh(word)
+    if not word.translation_uz:
+        raise ApiError("TRANSLATION_FAILED",
+                       "Tarjima yaratilmadi (AI sozlanmagan yoki javob bermadi).", 503)
+    return _entry_out(word)
+
+
+@router.post("/books/{book_id}/vocabulary/translate-missing")
+def translate_missing(book_id: str, limit: int = Query(default=100, ge=1, le=300),
+                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Bulk "translate missing": one bounded request, so it is safe on a serverless host."""
+    owned_book(db, user, book_id)
+    from app.services.ai import vocab_translate
+
+    pending = vocab_translate.missing_translations(db, book_id, limit=limit)
+    if not pending:
+        return {"requested": 0, "translated": 0, "remaining": 0}
+    stats = vocab_translate.translate_words(db, user.id, pending)
+    remaining = len(vocab_translate.missing_translations(db, book_id, limit=5000))
+    return {"requested": stats["requested"], "translated": stats["translated"],
+            "remaining": remaining, "error": stats.get("error", "")}
+
+
+@router.delete("/books/{book_id}/vocabulary/{word_id}", response_model=OkOut)
+def delete_word(book_id: str, word_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    owned_book(db, user, book_id)
+    word = db.get(VocabularyWord, word_id)
+    if not word or word.book_id != book_id:
+        raise ApiError("WORD_NOT_FOUND", "So'z topilmadi.", 404)
+    db.delete(word)
+    db.commit()
+    return OkOut(ok=True)
+
+
+@router.patch("/books/{book_id}/vocabulary/units/{unit_id}")
+def update_unit(book_id: str, unit_id: str, data: VocabUnitUpdateIn,
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    owned_book(db, user, book_id)
+    from app.models import VocabularyUnit
+    from app.services.ai.vision_vocabulary import clean_unit_title
+
+    unit = db.get(VocabularyUnit, unit_id)
+    if not unit or unit.book_id != book_id:
+        raise ApiError("UNIT_NOT_FOUND", "Bo'lim topilmadi.", 404)
+    if data.title is not None:
+        # The same normaliser the extractor uses: a title is words, never a stray glyph.
+        title = clean_unit_title(data.title)
+        unit.title = title or f"Unit {unit.number}"
+    if data.page_start is not None:
+        unit.page_start = max(1, data.page_start)
+    if data.page_end is not None:
+        unit.page_end = max(unit.page_start, data.page_end)
+    db.commit()
+    words = list(db.scalars(select(VocabularyWord).where(VocabularyWord.unit_id == unit.id)
+                            .order_by(VocabularyWord.position)).all())
+    return _unit_out(unit, words)
 
 
 @router.get("/books/{book_id}/vocabulary/{word_id}/picture")

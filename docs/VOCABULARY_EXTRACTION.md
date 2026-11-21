@@ -146,3 +146,102 @@ Reference result on `4000 Essential English Words, Book 1` (196 pages): **600 wo
 units**, 10 entries on each of pages 9, 10, 15, 16, 21, every one with a definition and an
 example; the remaining entries without a part of speech are pages where the scan destroyed
 the label entirely (printed as `*`), and the vision path fills those in.
+
+---
+
+# Units, clean storage and Uzbek translations
+
+This section describes the second round of work: the Lug'at is grouped by the book's own
+units, everything stored is clean, and every word has an Uzbek translation that can be used
+in tests immediately.
+
+## What was wrong (measured on the reference book, not guessed)
+
+| Symptom | Cause found | Fix |
+| --- | --- | --- |
+| Unit title `6-unit · r` | Word-list pages have **no text at all** for the unit banner: it is a rotated bitmap badge, so the text layer only holds the bullet glyphs (`r`, `c`, `£`, `©`). Any "biggest font" heading heuristic returns those glyphs. | The unit comes from a vision pass over the page image (`vocabulary_units.py`), and a title must pass `clean_unit_title` (≥3 letters, letter ratio ≥0.5, no lone glyph, not all page furniture). Failing that it is `Unit N`. |
+| Unit range `9–9` | The old code compared page *n* with page *n−1* and treated a page that printed no banner as a unit of its own. | A unit spans from its heading page to the page before the next unit's heading (`build_spans`), last unit to the end of the book. |
+| Duplicates, entries with no definition | No numbering/bullet stripping, no per-unit dedupe key, empty definitions were stored. | `clean_term` strips numbering/bullets/pronunciation/POS; dedupe on `(unit, word, part_of_speech)`; an entry without a definition goes to `rejected`, never to the database. |
+| `Tarjima tekshirilmagan — testga kiritilmaydi` on every word | Extraction stored `needs_translation=True` and nothing ever filled it. | A translation pass runs right after extraction (batches of 25, strict JSON, matched by id), `status=auto`, **usable in tests**, shown with an `auto` badge. |
+
+## Three passes
+
+1. **Headings** (`app/services/ai/vocabulary_units.py`) — every page, low resolution
+   (`max_pixels=900`), 8 pages per request, one narrow question: `{page, unit_number,
+   unit_title, has_banner, confidence}`. A page with no banner inherits the previous unit.
+2. **Words** (`app/services/ai/vision_vocabulary.py::analyse_page`) — full resolution, one
+   page per call, **with the detected unit as context**. Schema:
+   `{word, part_of_speech, definition, example, order_in_page, bbox}` (all required — strict
+   mode rejects optional keys). `order_in_page` is reading order, so a two-column page keeps
+   left-column-then-right; headers, footers, page numbers and exercises are ignored.
+3. **Translations** (`app/services/ai/vocab_translate.py`) — batches of 25, given headword +
+   POS + English definition + example, answering `{id, translation_uz, alt_translations}`.
+   POS-matched, short common Uzbek, no explanations; `clean_translation` drops brackets and
+   glosses, so `"jasur — brave"` becomes `"jasur"`.
+
+## Data model
+
+```
+vocabulary_units(id, book_id, number, title, page_start, page_end, confidence, order_index)
+vocabulary_words(id, book_id, unit_id, term, part_of_speech, definition_en, example_sentence,
+                 translation_uz, alt_translations, translation_status,
+                 page_number, position, ...)
+```
+
+* `translation_status` — `""` (none) · `auto` (machine, **usable**) · `verified` · `edited`.
+* `needs_translation` stays, but it now means only "has no translation at all"; it is no
+  longer a reason to keep a word out of a test.
+* `position` is the entry's place **inside its unit**, so a unit is one ordered list even
+  when it spans two pages.
+* Unique key: `(book_id, unit_id, term)` — the same spelling may legitimately appear in two
+  units (`well` as adverb, then as noun).
+* Alembic revision `f1a9c3d47b22`; the columns are also added tolerantly at startup
+  (`schema_upgrade.py`), so a deployment that never runs `alembic upgrade head` still works.
+
+## Re-extraction replaces, it does not append
+
+`vocab_extract.extract_book(..., replace=True)` clears the book's previous **machine**
+extraction (and the per-page `vocab_scanned_at` stamps, so the pages are actually re-read).
+Words a human **verified or edited** are kept with their unit and translation. This is the
+difference between "we fixed the extractor" and "the old broken rows are still there".
+
+## API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /books/{id}/vocabulary/units` | units ordered by number, each with page range, `count`, `translated_count`, `auto_count` and `entries` in position order; plus book totals |
+| `POST /books/{id}/vocabulary/units/detect` | run the heading pass alone |
+| `PATCH /books/{id}/vocabulary/{word_id}` | edit word/POS/definition/example/translation, move to another unit, set position |
+| `POST /books/{id}/vocabulary/{word_id}/verify` | `auto` → `verified` |
+| `POST /books/{id}/vocabulary/{word_id}/translate` | regenerate one word's translation |
+| `POST /books/{id}/vocabulary/translate-missing` | bulk, bounded per request |
+| `DELETE /books/{id}/vocabulary/{word_id}` | remove one entry |
+| `POST /books/{id}/vision-vocabulary/batch` | bounded page batch; `replace_existing: true` on the first call of a fresh run |
+
+## UI (`/vocabulary`)
+
+Units are collapsible sections ordered by unit number with word counts, a search box that
+looks at word, translation and definition, and inline editing per card: edit translation,
+verify, regenerate, move to another unit, delete. Machine translations show a small `auto`
+badge instead of the old "not in tests" sentence.
+
+## Environment variables added
+
+| Variable | Meaning |
+| --- | --- |
+| `VOCAB_TRANSLATE_MAX_ROUNDS` | translate-and-store rounds one extraction may run (40; each round covers up to 200 words) |
+
+## Verification performed locally (no real AI key in this sandbox)
+
+`backend/tests/test_vocabulary_units.py` (17 tests) covers: unit ranges from heading to
+heading, a glyph title becoming `Unit N`, sequential unit numbers, cleaning/dedupe/rejection,
+two-column reading order, positions counted within a unit, replace-on-re-extraction, a human
+edit surviving re-extraction, auto translations being usable, `auto` never overwritten,
+batch failure leaving words retryable, and the grouped view's ordering/counts/privacy.
+
+A full run over the real 196-page book with a **simulated** vision model (the model's answers
+built from the book's own text layer, because this sandbox has no provider key) produced:
+32 units (units 1–30 with words, 31–32 empty), page ranges `9–14, 15–20, …, 183–188`, 544
+stored words, 1 rejected entry, 544 `auto` translations, 0 duplicates, and a second full run
+replaced 544 words / 32 units with an identical result — no accumulation. **Model accuracy
+is not verified here**: that needs a real `AI_API_KEY`/`AI_VISION_MODEL`.

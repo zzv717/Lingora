@@ -57,7 +57,13 @@ def _column_additions() -> list[tuple[str, str, str]]:
             ("vocabulary_words", "picture_bbox", "JSON"),
             ("book_pages", "vocab_scanned_at", "TIMESTAMP WITH TIME ZONE"),
             ("books", "text_vocabulary_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("books", "vocabulary_note_uz", "TEXT NOT NULL DEFAULT ''")]
+            ("books", "vocabulary_note_uz", "TEXT NOT NULL DEFAULT ''"),
+            # Vocabulary units (Alembic f1a9c3d47b22). The table itself is created by
+            # create_all above; only columns added later need listing here.
+            ("vocabulary_words", "unit_id", "VARCHAR(36)"),
+            ("vocabulary_words", "position", "INTEGER NOT NULL DEFAULT 0"),
+            ("vocabulary_words", "translation_status", "VARCHAR(16) NOT NULL DEFAULT ''"),
+            ("vocabulary_words", "alt_translations", "JSON")]
 
 
 def ensure_schema(engine: Engine, stamp: bool = True) -> list[str]:

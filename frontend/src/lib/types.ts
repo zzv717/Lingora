@@ -193,27 +193,55 @@ export interface VocabWord {
   picture_bbox?: number[] | null;
 }
 
+/** One word of a unit, as the extractor stored it. */
+export interface VocabUnitEntry {
+  id: string;
+  word: string;
+  part_of_speech: string;
+  definition: string;
+  example: string;
+  translation_uz: string;
+  alt_translations: string[];
+  /** "" = no translation, "auto" = machine (usable), "verified"/"edited" = a human did it. */
+  translation_status: "" | "auto" | "verified" | "edited";
+  status: string;
+  needs_translation: boolean;
+  unit_id: string | null;
+  position: number;
+  page: number;
+  source: string;
+  picture_page: number | null;
+  picture_bbox: number[] | null;
+}
+
 /** One unit of a vocabulary book, as the extractor stored it. */
 export interface VocabUnit {
-  unit: string;
+  /** The unit row id; null for the "other entries" bucket and legacy lesson groups. */
+  id: string | null;
+  unit: string | number;
+  /** Printed unit number when the book has one. */
+  number: number | null;
   title: string;
+  unit_title: string;
   lesson_id: string | null;
   page_start: number | null;
   page_end: number | null;
+  confidence: number;
   count: number;
-  entries: {
-    id: string;
-    word: string;
-    part_of_speech: string;
-    definition: string;
-    example: string;
-    translation_uz: string;
-    page: number;
-    source: string;
-    needs_translation: boolean;
-    picture_page: number | null;
-    picture_bbox: number[] | null;
-  }[];
+  translated_count: number;
+  auto_count: number;
+  entries: VocabUnitEntry[];
+}
+
+/** Response of GET /books/{id}/vocabulary/units. */
+export interface VocabUnitsResponse {
+  book_id: string;
+  total: number;
+  translated: number;
+  untranslated: number;
+  auto_translated: number;
+  units: VocabUnit[];
+  vocabulary_note_uz: string;
 }
 
 export interface VocabItem {

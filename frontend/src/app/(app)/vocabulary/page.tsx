@@ -1,12 +1,157 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { get, post } from "@/lib/api";
-import type { Book, Job, Structure, VocabSession, VocabUnit, VocabWord } from "@/lib/types";
+import { del, get, patch, post } from "@/lib/api";
+import type {
+  Book, Job, Structure, VocabSession, VocabUnit, VocabUnitEntry, VocabWord,
+} from "@/lib/types";
 import { TopBar } from "@/components/nav";
 import { Badge, Button, Card, EmptyState, Spinner, useToast } from "@/components/ui";
 import { VocabPicture } from "@/components/reader/vocab-picture";
 import { VisionVocabulary } from "@/components/reader/vision-vocabulary";
+
+/** A word's translation state, in the reader's words: "auto" is usable, not a warning. */
+function TranslationBadge({ status, needs }: { status: VocabUnitEntry["translation_status"]; needs: boolean }) {
+  if (needs) return <Badge tone="red">Tarjima yo&apos;q</Badge>;
+  if (status === "verified") return <Badge tone="green">✓ Tasdiqlangan</Badge>;
+  if (status === "edited") return <Badge tone="blue">Tahrirlangan</Badge>;
+  if (status === "auto") return <Badge tone="amber">auto</Badge>;
+  return null;
+}
+
+/**
+ * One entry of the Lug'at, editable in place.
+ *
+ * The old card printed "Tarjima tekshirilmagan — testga kiritilmaydi" over a machine
+ * translation that had never been generated: the word existed, was never usable, and there
+ * was no way to fix it from the screen. Now a word that has only a machine translation says
+ * so with a small "auto" badge and still enters tests; editing, regenerating, verifying and
+ * deleting all happen here.
+ */
+function WordCard({ bookId, word, units, onChanged, onDelete, onReload }:
+  { bookId: string; word: VocabUnitEntry; units: VocabUnit[];
+    onChanged: (w: VocabUnitEntry) => void; onDelete: (id: string) => void;
+    onReload: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(word.translation_uz);
+  const [busy, setBusy] = useState("");
+  const { toast } = useToast();
+
+  async function save() {
+    setBusy("save");
+    try {
+      onChanged(await patch<VocabUnitEntry>(`/books/${bookId}/vocabulary/${word.id}`,
+        { translation_uz: draft }));
+      setEditing(false);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Saqlanmadi", "error");
+    } finally { setBusy(""); }
+  }
+
+  async function regenerate() {
+    setBusy("regen");
+    try {
+      onChanged(await post<VocabUnitEntry>(`/books/${bookId}/vocabulary/${word.id}/translate`));
+      toast("Tarjima yangilandi", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tarjima yaratilmadi", "error");
+    } finally { setBusy(""); }
+  }
+
+  async function verify() {
+    setBusy("verify");
+    try {
+      onChanged(await post<VocabUnitEntry>(`/books/${bookId}/vocabulary/${word.id}/verify`));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tasdiqlanmadi", "error");
+    } finally { setBusy(""); }
+  }
+
+  async function move(unitId: string) {
+    setBusy("move");
+    try {
+      await patch<VocabUnitEntry>(`/books/${bookId}/vocabulary/${word.id}`, { unit_id: unitId });
+      toast("Boshqa bo'limga ko'chirildi", "success");
+      onReload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Ko'chirilmadi", "error");
+    } finally { setBusy(""); }
+  }
+
+  return (
+    <div className="min-w-0 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-700">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <span className="break-words text-lg font-semibold leading-7 text-slate-900 dark:text-slate-100">{word.word}</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {word.part_of_speech && <Badge>{word.part_of_speech}</Badge>}
+          <TranslationBadge status={word.translation_status} needs={word.needs_translation} />
+        </div>
+      </div>
+      {editing ? (
+        <div className="mt-1 space-y-2">
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+            className="w-full rounded-lg border border-brand-400 px-2 py-1.5 text-base dark:bg-slate-900"
+            aria-label={`${word.word} uchun o'zbekcha tarjima`}
+          />
+          <div className="flex gap-2">
+            <Button size="sm" loading={busy === "save"} onClick={save}>Saqlash</Button>
+            <Button size="sm" variant="ghost" onClick={() => { setEditing(false); setDraft(word.translation_uz); }}>Bekor</Button>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-1 break-words text-base leading-7 text-slate-700 dark:text-slate-200">
+          {word.translation_uz || <span className="text-slate-400">tarjima yo&apos;q</span>}
+          {!!word.alt_translations?.length && (
+            <span className="ml-2 text-sm text-slate-400">({word.alt_translations.join(", ")})</span>
+          )}
+        </p>
+      )}
+      {word.picture_page && word.picture_bbox && (
+        <VocabPicture bookId={bookId} wordId={word.id} term={word.word} />
+      )}
+      {word.definition && <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{word.definition}</p>}
+      {word.example && <p className="mt-1 break-words text-sm italic leading-6 text-slate-500 dark:text-slate-400">{word.example}</p>}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        {!editing && (
+          <button type="button" onClick={() => { setEditing(true); setDraft(word.translation_uz); }}
+            className="font-medium text-brand-700 hover:underline dark:text-brand-300">Tahrirlash</button>
+        )}
+        {word.translation_status !== "verified" && !word.needs_translation && (
+          <button type="button" onClick={verify} disabled={!!busy}
+            className="font-medium text-emerald-700 hover:underline disabled:opacity-50 dark:text-emerald-300">Tasdiqlash</button>
+        )}
+        {(word.translation_status === "auto" || !word.translation_uz) && (
+          <button type="button" onClick={regenerate} disabled={!!busy}
+            className="font-medium text-slate-600 hover:underline disabled:opacity-50 dark:text-slate-300">
+            {busy === "regen" ? "Yaratilmoqda…" : "Qayta tarjima"}
+          </button>
+        )}
+        {units.length > 1 && (
+          <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            <span className="sr-only">Boshqa bo&apos;limga ko&apos;chirish</span>
+            <select
+              value={word.unit_id ?? ""}
+              onChange={(e) => move(e.target.value)}
+              disabled={!!busy}
+              className="rounded border border-slate-300 bg-white px-1 py-0.5 text-xs dark:border-slate-600 dark:bg-slate-900"
+            >
+              <option value="">Bo&apos;limga ko&apos;chirish…</option>
+              {units.filter((u) => u.id && u.id !== word.unit_id).map((u) => (
+                <option key={u.id} value={u.id!}>{u.number != null ? `${u.number}-unit` : u.title}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button type="button" onClick={() => onDelete(word.id)} disabled={!!busy}
+          className="font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400">O&apos;chirish</button>
+      </div>
+    </div>
+  );
+}
 
 export default function VocabularyPage() {
   const [books, setBooks] = useState<Book[] | null>(null);
@@ -17,10 +162,15 @@ export default function VocabularyPage() {
   // Units come from the extractor itself: a vocabulary book is organised per unit, and a
   // flat list of 600 words gives no clue whether extraction actually worked.
   const [units, setUnits] = useState<VocabUnit[] | null>(null);
+  // Totals come from the same response as the units, so the header cannot disagree with the
+  // list below it (a word with no Uzbek translation used to be invisible in both).
+  const [vocabTotals, setVocabTotals] = useState<{ total: number; translated: number; untranslated: number } | null>(null);
   const [stats, setStats] = useState<{ learning: number; mastered: number; due: number; total: number } | null>(null);
   const [starting, setStarting] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
+  const [translating, setTranslating] = useState(false);
+  const [regenerating, setRegenerating] = useState<string>("");
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [job, setJob] = useState<Job | null>(null);
@@ -46,8 +196,12 @@ export default function VocabularyPage() {
       setStruct(st);
       const w = await get<VocabWord[]>(`/books/${selected}/vocabulary`);
       setWords(w);
-      try { setUnits((await get<{ units: VocabUnit[] }>(`/books/${selected}/vocabulary/units`)).units); }
-      catch { setUnits([]); }
+      try {
+        const grouped = await get<{ units: VocabUnit[]; total: number; translated: number; untranslated: number }>(
+          `/books/${selected}/vocabulary/units`);
+        setUnits(grouped.units);
+        setVocabTotals({ total: grouped.total, translated: grouped.translated, untranslated: grouped.untranslated });
+      } catch { setUnits([]); }
       // Why a book is empty is usually the last job's answer: a first analysis that ran
       // with an older detector, or a re-analysis that failed. Showing it turns a dead end
       // into something the user can act on.
@@ -147,6 +301,57 @@ export default function VocabularyPage() {
     </Button>
   );
 
+  // "Translate missing" is a bounded server call (it walks batches until a small cap), so a
+  // book with hundreds of untranslated words is fixed without the user clicking each one.
+  const translateMissing = async () => {
+    if (!selected) return;
+    setTranslating(true);
+    try {
+      const out = await post<{ translated: number; remaining: number; error?: string }>(
+        `/books/${selected}/vocabulary/translate-missing?limit=150`);
+      if (out.translated) {
+        toast(`${out.translated} ta so'z tarjima qilindi${out.remaining ? ` · ${out.remaining} ta qoldi` : ""}`, "success");
+      } else {
+        toast(out.error ? `Tarjima yaratilmadi (${out.error})` : "Tarjima kerak bo'lgan so'z yo'q", "error");
+      }
+      setReloadToken((n) => n + 1);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tarjima yaratilmadi", "error");
+    } finally { setTranslating(false); }
+  };
+
+  // Editing a word must not reload the page under the user's cursor: the card updates from
+  // the server's own answer, and the group counts are recomputed from the list.
+  const replaceWord = (next: VocabUnitEntry) => {
+    setUnits((old) => (old || []).map((u) => {
+      const has = u.entries.some((w) => w.id === next.id);
+      if (!has) return u;
+      const entries = u.entries.map((w) => (w.id === next.id ? next : w));
+      return {
+        ...u,
+        entries,
+        count: entries.length,
+        translated_count: entries.filter((w) => w.translation_uz).length,
+        auto_count: entries.filter((w) => w.translation_status === "auto").length,
+      };
+    }));
+  };
+
+  const deleteWord = async (wordId: string) => {
+    if (!selected) return;
+    try {
+      await del(`/books/${selected}/vocabulary/${wordId}`);
+      setUnits((old) => (old || []).map((u) => {
+        if (!u.entries.some((w) => w.id === wordId)) return u;
+        const entries = u.entries.filter((w) => w.id !== wordId);
+        return { ...u, entries, count: entries.length };
+      }));
+      toast("So'z o'chirildi", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "O'chirilmadi", "error");
+    }
+  };
+
   const readyBooks = (books || []).filter((b) => b.status === "ready");
 
   return (
@@ -232,6 +437,28 @@ export default function VocabularyPage() {
               </Button>
             </Card>
 
+            {vocabTotals && (
+              <Card className="text-sm text-slate-600 dark:text-slate-300">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-slate-800 dark:text-slate-100">
+                      {vocabTotals.total} ta so&apos;z · {vocabTotals.translated} tasi o&apos;zbekchada
+                      {vocabTotals.untranslated ? ` · ${vocabTotals.untranslated} tasi tarjimasiz` : ""}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Mashinaviy tarjimalar «auto» belgisi bilan turadi va testlarda ishlatiladi.
+                      Tasdiqlasangiz yoki tahrirlasangiz — «tasdiqlangan»/«tahrirlangan» bo&apos;ladi.
+                    </p>
+                  </div>
+                  {vocabTotals.untranslated > 0 && (
+                    <Button variant="secondary" loading={translating} onClick={translateMissing}>
+                      Tarjimasiz so&apos;zlarni tarjima qilish ({vocabTotals.untranslated})
+                    </Button>
+                  )}
+                </div>
+              </Card>
+            )}
+
             {!struct ? (
               <div className="flex justify-center py-10"><Spinner className="h-6 w-6 text-brand-500" /></div>
             ) : (
@@ -239,67 +466,60 @@ export default function VocabularyPage() {
                 {(units ?? []).map((u) => {
                   const normalizedQuery = query.trim().toLocaleLowerCase();
                   const uw = normalizedQuery
-                    ? u.entries.filter((w) => `${w.word} ${w.translation_uz} ${w.definition}`
+                    ? u.entries.filter((w) => `${w.word} ${w.translation_uz} ${w.definition} ${(w.alt_translations || []).join(" ")}`
                         .toLocaleLowerCase().includes(normalizedQuery))
                     : u.entries;
                   if (uw.length === 0) return null;
                   // Group key for expand state and for the lesson gate, which is keyed by lesson.
-                  const key = u.lesson_id ?? `unit:${u.unit}:${u.page_start}`;
+                  const key = u.lesson_id ?? `unit:${u.number}:${u.page_start}`;
                   const lp = u.lesson_id ? struct.lessons_progress[u.lesson_id] : undefined;
-                  const expanded = !!expandedLessons[key] || !!normalizedQuery;
-                  const visibleWords = expanded ? uw : uw.slice(0, 12);
+                  // Units start closed: a 30-unit book is a list of 30 headings, not a wall of
+                  // 600 cards. A search reopens whatever it matches, so a hit is never hidden.
+                  const collapsed = normalizedQuery ? false : expandedLessons[key] !== true;
+                  const visibleWords = collapsed ? [] : uw;
+                  const heading = u.number != null && u.number > 0
+                    ? `${u.number}-unit${u.unit_title ? ` · ${u.unit_title}` : ""}`
+                    : (u.title || "Boshqa lug'at yozuvlari");
                   return (
                     <Card key={key}>
-                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedLessons((old) => ({ ...old, [key]: collapsed }))}
+                        className="mb-3 flex w-full flex-wrap items-center justify-between gap-3 text-left"
+                        aria-expanded={!collapsed}
+                      >
                         <div>
                           <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-                            {u.unit ? `${u.unit}-unit · ` : ""}{u.title}
+                            {heading}
                           </h3>
                           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
                             {uw.length} so&apos;z
+                            {u.translated_count ? ` · ${u.translated_count} tarjima qilingan` : ""}
                             {u.page_start ? ` · ${u.page_start}-${u.page_end} bet` : ""}
+                            {u.confidence && u.confidence < 0.5 ? " · sarlavha ishonchsiz" : ""}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
+                          {u.auto_count > 0 && <Badge tone="amber">{u.auto_count} auto</Badge>}
                           {lp && !lp.vocab_gate_passed && lp.has_vocabulary && <Badge tone="amber">Test o&apos;tilmagan</Badge>}
                           {lp?.vocab_gate_passed && lp.has_vocabulary && <Badge tone="green">✓ Test o&apos;tilgan</Badge>}
                           {u.lesson_id && (
                             <Button size="sm" variant={lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "primary" : "secondary"}
                               loading={starting} disabled={!uw.some((w) => !w.needs_translation)}
-                              onClick={() => startReview(u.lesson_id!)}>
+                              onClick={(e) => { e.stopPropagation(); startReview(u.lesson_id!); }}>
                               {lp && lp.has_vocabulary && !lp.vocab_gate_passed ? "🔑 Gatetestni topshirish" : "Test"}
                             </Button>
                           )}
+                          <span className="text-sm text-slate-400">{collapsed ? "▸ ochish" : "▾ yopish"}</span>
                         </div>
-                      </div>
+                      </button>
                       <div className="grid gap-3 md:grid-cols-2">
                         {visibleWords.map((w) => (
-                          <div key={w.id} className="min-w-0 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-700">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <span className="break-words text-lg font-semibold leading-7 text-slate-900 dark:text-slate-100">{w.word}</span>
-                              {w.part_of_speech && <Badge>{w.part_of_speech}</Badge>}
-                            </div>
-                            <p className="mt-1 break-words text-base leading-7 text-slate-600 dark:text-slate-300">
-                              {w.needs_translation ? "Tarjima tekshirilmagan — testga kiritilmaydi" : w.translation_uz}
-                            </p>
-                            {/* The illustration is cropped from the original PDF, so it stays sharp. */}
-                            {w.picture_page && w.picture_bbox && (
-                              <VocabPicture bookId={selected} wordId={w.id} term={w.word} />
-                            )}
-                            {w.definition && <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-slate-400">{w.definition}</p>}
-                            {w.example && <p className="mt-1 break-words text-sm italic leading-6 text-slate-500 dark:text-slate-400">{w.example}</p>}
-                          </div>
+                          <WordCard key={w.id} bookId={selected} word={w} units={units ?? []}
+                            onChanged={replaceWord} onDelete={deleteWord}
+                            onReload={() => setReloadToken((n) => n + 1)} />
                         ))}
                       </div>
-                      {uw.length > 12 && !normalizedQuery && (
-                        <button
-                          type="button"
-                          onClick={() => setExpandedLessons((old) => ({ ...old, [key]: !expanded }))}
-                          className="mt-4 rounded-lg px-3 py-2 text-base font-medium text-brand-700 hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-brand-300 dark:hover:bg-brand-900/30"
-                        >
-                          {expanded ? "Kamroq ko'rsatish" : `Barcha ${uw.length} ta so'zni ko'rish`}
-                        </button>
-                      )}
                     </Card>
                   );
                 })}
