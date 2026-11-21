@@ -55,7 +55,9 @@ def _column_additions() -> list[tuple[str, str, str]]:
     """
     return [("vocabulary_words", "picture_page", "INTEGER"),
             ("vocabulary_words", "picture_bbox", "JSON"),
-            ("book_pages", "vocab_scanned_at", "TIMESTAMP WITH TIME ZONE")]
+            ("book_pages", "vocab_scanned_at", "TIMESTAMP WITH TIME ZONE"),
+            ("books", "text_vocabulary_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("books", "vocabulary_note_uz", "TEXT NOT NULL DEFAULT ''")]
 
 
 def ensure_schema(engine: Engine, stamp: bool = True) -> list[str]:

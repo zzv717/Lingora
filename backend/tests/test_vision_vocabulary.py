@@ -9,9 +9,9 @@ import json
 from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.models import BookPage, UsageEvent, VocabularyWord
+from app.models import Book, BookPage, UsageEvent, VocabularyWord
 from app.services.ai.vision_vocabulary import clean_example, clean_term, normalize_word_list
-from tests.conftest import auth_headers, make_user
+from tests.conftest import auth_headers, make_user, wait_for_book
 from tests.test_browser_ocr import setup_scan
 from tests.test_vision_map_preview import Provider, Storage
 
@@ -38,6 +38,9 @@ def setup(monkeypatch, responses):
     monkeypatch.setattr("app.services.ai.vision_vocabulary.get_provider", lambda: provider)
     monkeypatch.setattr("app.services.ai.vision_map.get_storage", lambda: Storage())
     monkeypatch.setattr(settings, "ai_vision_model", "vision-test")
+    # The test env ships AI_PROVIDER=none; the fallback decision reads this, not the mock.
+    monkeypatch.setattr(settings, "ai_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "ai_api_key", "test-key")
     monkeypatch.setattr(settings, "vision_exercise_pages_per_day", 150)
     return provider
 
@@ -273,3 +276,169 @@ def test_units_view_lists_words_per_unit_and_keeps_orphans(client, db, monkeypat
     assert [unit["title"] for unit in body["units"]] == ["Lesson", "Boshqa lug'at yozuvlari"]
     assert [e["word"] for e in body["units"][0]["entries"]] == ["afraid"]
     assert [e["word"] for e in body["units"][1]["entries"]] == ["agree"]
+
+
+# --- automatic fallback: the user must not have to notice a checkbox ------------------------
+
+def test_the_request_carries_the_strict_json_schema(client, db, monkeypatch):
+    """The model is constrained by a schema, not by a sentence in the prompt."""
+    from app.services.ai.vision_vocabulary import VOCABULARY_JSON_SCHEMA
+
+    h, book, _, _ = setup_scan(client, db)
+    provider = setup(monkeypatch, [word_list_output()])
+    client.post(url(book, 1, "/preview"), headers=h, json={"consent_images_to_provider": True})
+    schema = provider.calls[0][1].get("json_schema")
+    assert schema == VOCABULARY_JSON_SCHEMA
+    assert set(schema["properties"]) == {"is_word_list", "unit", "entries", "warnings"}
+    entry = schema["properties"]["entries"]["items"]
+    assert set(entry["properties"]) == {"word", "part_of_speech", "definition", "example", "bbox"}
+    # Strict mode rejects optional properties, so every key must be required.
+    assert set(entry["required"]) == set(entry["properties"])
+    assert provider.calls[0][1].get("json_mode") is True
+
+
+def test_a_transient_provider_error_is_retried_instead_of_losing_the_page(client, db, monkeypatch):
+    """A 503 from the provider is retried; a 401 is not (it would fail on every page)."""
+    from app.core.errors import ApiError
+
+    class Flaky:
+        name = "flaky"
+        def __init__(self, failures):
+            self.failures = failures
+            self.calls = 0
+        def complete(self, messages, **kwargs):
+            from app.services.ai.provider import AIResponse
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise ApiError("AI_PROVIDER_BUSY", "band", 503)
+            return AIResponse(content=word_list_output("afraid"), model="vision-test")
+
+    h, book, _, _ = setup_scan(client, db)
+    flaky = Flaky(1)
+    monkeypatch.setattr("app.services.ai.vision_vocabulary.get_provider", lambda: flaky)
+    monkeypatch.setattr("app.services.ai.vision_map.get_storage", lambda: Storage())
+    monkeypatch.setattr(settings, "ai_vision_model", "vision-test")
+    monkeypatch.setattr("app.services.ai.vision_vocabulary.time.sleep", lambda _s: None)
+    r = client.post(url(book, 1), headers=h, json={"consent_images_to_provider": True})
+    assert r.status_code == 200 and flaky.calls == 2
+
+
+def test_fallback_runs_when_the_text_parser_found_nothing(client, db, monkeypatch):
+    """The whole point: an unreadable text layer fills the Lug'at without a single click."""
+    from tests.pdf_factory import make_sample_book
+
+    # The sample book is grammar exercises: the text parser finds no word list at all, which
+    # is the situation the user reported. The analysis itself must fall back to vision.
+    monkeypatch.setattr(settings, "vocab_vision_fallback_min_entries", 50)
+    monkeypatch.setattr(settings, "vocab_vision_fallback_pages", 2)
+    # The renderer reads the PDF back from storage and checks its page count against the
+    # Book row, so the test serves the same 2-page document that setup_scan creates.
+    h, book_id, _, _ = setup_scan(client, db)
+    db.get(Book, book_id).storage_path = "sciences/book.pdf"
+    db.commit()
+    from app.services import upload_cache
+    from tests.test_vision_map_preview import pdf_bytes
+    upload_cache.stash(book_id, pdf_bytes())   # what the upload endpoint leaves behind
+    provider = setup(monkeypatch, [word_list_output("afraid", "agree")])
+    from app.models import ProcessingJob
+    from app.services.pipeline import Pipeline
+    from app.services.storage import get_storage
+    job = ProcessingJob(book_id=book_id, user_id=db.get(Book, book_id).user_id, status="queued",
+                        job_type="reanalyze")   # setup_scan's book already has content
+    db.add(job); db.commit()
+    Pipeline(db, job).run()
+    db.expire_all()
+    book = db.get(Book, book_id)
+    assert book.status == "ready"
+    assert provider.calls, "the analysis must read pages with the vision model"
+    vision_words = [w for w in db.scalars(select(VocabularyWord)
+                                          .where(VocabularyWord.book_id == book_id))
+                    if w.source == "vision"]
+    assert {w.term for w in vision_words} == {"afraid", "agree"}
+    assert all(w.needs_translation and w.translation_uz == "" for w in vision_words)
+    assert book.vocabulary_note_uz       # the Lug'at screen can explain itself
+
+
+def test_fallback_does_not_run_when_the_text_parser_succeeded(client, db, monkeypatch):
+    """Vision costs money per page: a book the rules already read must not be re-read."""
+    from app.models import Book
+
+    h, book, _, _ = setup_scan(client, db)
+    monkeypatch.setattr(settings, "vocab_vision_fallback_min_entries", 0)
+    book_row = db.get(Book, book)
+    book_row.text_vocabulary_count = 600
+    db.commit()
+    provider = setup(monkeypatch, [word_list_output()])
+    from app.services.pipeline import Pipeline
+    db.add_all([VocabularyWord(book_id=book, term=f"w{i}", page_number=1) for i in range(600)])
+    db.commit()
+    assert Pipeline(db, type("J", (), {"book_id": book})())._vision_vocabulary_fallback(
+        db.get(Book, book), [{"page_number": 1}], 600)["words_added"] == 0
+    assert provider.calls == []
+
+
+def test_fallback_never_fails_the_upload_when_vision_is_unavailable(client, db, monkeypatch):
+    """A missing key or a broken provider must leave a readable book readable."""
+    from app.models import Book
+    from tests.pdf_factory import make_sample_book
+
+    monkeypatch.setattr(settings, "ai_provider", "none")     # no key in this deployment
+    monkeypatch.setattr(settings, "vocab_vision_fallback_min_entries", 50)
+    h = auth_headers(make_user(client, "fallback-off@example.com")["access_token"])
+    response = client.post(f"{API}/books/upload", headers=h,
+                           files={"file": ("s.pdf", make_sample_book(), "application/pdf")},
+                           data={"consent": "true"})
+    book_id = response.json()["id"]
+    wait_for_book(client, h, book_id)
+    db.expire_all()
+    book = db.get(Book, book_id)
+    assert book.status == "ready"        # the upload did not fail because of AI
+    assert "AI (vision)" in book.vocabulary_note_uz
+
+
+def test_a_batch_stops_starting_pages_when_its_time_budget_is_spent(client, db, monkeypatch):
+    """A serverless kill must not swallow a batch that was already paid for."""
+    h, book, _, _ = setup_scan(client, db)
+    setup(monkeypatch, [word_list_output("afraid"), word_list_output("agree")])
+    # A zero budget means "do not start another page": the first one still runs, because a
+    # batch that never makes progress would loop forever, and the rest wait for the next call.
+    monkeypatch.setattr(settings, "vocab_vision_batch_seconds", 0.0)
+    r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
+                    json={"consent_images_to_provider": True, "pages": [1, 2]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [item["status"] for item in body["results"]] == ["ok", "deferred"]
+    assert body["remaining_pages"] == 1      # the deferred page is still owed
+    assert body["words_added"] == 1
+
+
+def test_a_dropped_database_connection_does_not_lose_the_paid_page(client, db, monkeypatch):
+    """The model answer is already paid for; a dead pooled connection must not discard it."""
+    from sqlalchemy.exc import OperationalError
+
+    from app.api.v1 import books as books_api
+
+    h, book, _, _ = setup_scan(client, db)
+    setup(monkeypatch, [word_list_output("afraid")])
+    assert books_api._is_transient_db_error(
+        OperationalError("SELECT 1", {}, Exception("server closed the connection unexpectedly")))
+    assert not books_api._is_transient_db_error(ValueError("bad page"))
+
+    from app.services.ai import vision_vocabulary as vv
+    calls = {"n": 0}
+    original_mark = vv.mark_scanned
+    def flaky_mark(db_session, book_row, page_number):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("UPDATE", {}, Exception("SSL connection has been closed unexpectedly"))
+        return original_mark(db_session, book_row, page_number)
+    monkeypatch.setattr(vv, "mark_scanned", flaky_mark)
+
+    r = client.post(f"{API}/books/{book}/vision-vocabulary/batch", headers=h,
+                    json={"consent_images_to_provider": True, "pages": [1]})
+    assert r.status_code == 200, r.text
+    body = r.json()["results"][0]
+    assert body["status"] == "ok" and body.get("retried") is True
+    db.expire_all()
+    assert db.scalar(select(func.count(VocabularyWord.id))
+                     .where(VocabularyWord.book_id == book, VocabularyWord.term == "afraid")) == 1

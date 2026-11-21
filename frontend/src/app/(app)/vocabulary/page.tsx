@@ -108,21 +108,38 @@ export default function VocabularyPage() {
   };
   // The most useful sentence is not "no vocabulary": it is WHY. A scanned book and a book
   // with no word lists both end up empty, and only one of them is fixable by re-analysis.
+  // The most useful sentence is not "no vocabulary": it is WHY — and now the backend knows.
+  // The pipeline records how many entries the text parser found and what the automatic
+  // vision fallback did, so this screen reports a fact instead of guessing from a page count.
+  const selectedBook = (books || []).find((b) => b.id === selected) || null;
   const emptyReason = (() => {
+    if (selectedBook?.vocabulary_note_uz) return selectedBook.vocabulary_note_uz;
     const cov = struct?.coverage;
     if (!cov) return "";
     if (cov.pages_needing_ocr > 0) {
-      return `Kitobning ${cov.pages_needing_ocr} sahifasi skanerlangan (matn emas, rasm) — o'qish uchun OCR kerak. Kitob sahifasidagi «Skanerlangan sahifalar» bo'limidan ularni birma-bir o'qib chiqing.`;
+      return `Kitobning ${cov.pages_needing_ocr} sahifasida matn qatlami yo'q (rasm). Matn ajratgich ularni o'qiy olmaydi; quyidagi AI o'qish tugmasi rasmlardan so'zlarni oladi.`;
     }
     if (job?.status === "failed") {
       return `Oxirgi tahlil tugallanmadi${job.error_code ? ` (${job.error_code})` : ""}${job.error_message ? `: ${job.error_message}` : "."}`;
+    }
+    if (selectedBook && typeof selectedBook.text_vocabulary_count === "number" && selectedBook.text_vocabulary_count === 0) {
+      return "Matn qatlami bor, lekin matn ajratgich undan birorta lug'at yozuvini topa olmadi. AI (vision) yo'li bilan sahifalarni o'qish mumkin.";
     }
     return "Tahlil tugadi, lekin bu kitobdan lug'at so'zlari ajratilmadi — kitobda alohida lug'at ro'yxatlari bo'lmasligi mumkin.";
   })();
   const ocrNeeded = (struct?.coverage.pages_needing_ocr ?? 0) > 0;
   // A scanned book is re-readable only by the vision path: OCR lifts the text, but the
   // rule-based detector still needs a "Word List" layout it can parse. Vision reads it.
+  //
+  // But a scanned book is not the only case that needs vision, and gating the whole panel
+  // on it is why a text book could show "no vocabulary found" with no way forward: the
+  // text parser can fail on a layout perfectly well while the pages stay "text" pages.
+  // The panel is therefore offered whenever the Lug'at is incomplete, and the "check text
+  // pages too" checkbox (already in the panel) decides the worklist.
   const scannedBook = ocrNeeded;
+  const visionWanted = ocrNeeded
+    || !!selectedBook?.vocabulary_note_uz
+    || (typeof selectedBook?.text_vocabulary_count === "number" && selectedBook.text_vocabulary_count === 0);
 
   const reanalyzeAction = (
     <Button variant="secondary" loading={reanalyzing} onClick={reanalyzeBook}>
@@ -187,7 +204,7 @@ export default function VocabularyPage() {
                   )}
                   {!scannedBook && reanalyzeAction}
                 </div>
-                {scannedBook && selected && (
+                {visionWanted && selected && (
                   <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
                 )}
               </Card>
@@ -296,7 +313,7 @@ export default function VocabularyPage() {
                       {!scannedBook && reanalyzeAction}
                     </div>}
                   />
-                  {scannedBook && selected && (
+                  {visionWanted && selected && (
                     <VisionVocabulary bookId={selected} onDone={() => setReloadToken((n) => n + 1)} />
                   )}
                   </div>

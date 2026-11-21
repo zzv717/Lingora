@@ -99,6 +99,11 @@ class BookOut(BaseModel):
     description: str
     created_at: datetime
     updated_at: datetime
+    # How the Lug'at got filled: entries the text parser recovered, and a ready-made Uzbek
+    # explanation of what is missing and why. Without these the screen can only say
+    # "no vocabulary found", which is the message users could not act on.
+    text_vocabulary_count: int = 0
+    vocabulary_note_uz: str = ""
 
 
 class JobOut(BaseModel):
